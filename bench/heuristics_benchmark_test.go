@@ -72,3 +72,32 @@ func BenchmarkComparison_HistogramVsHash(b *testing.B) {
 		}
 	})
 }
+
+// Benchmarks for Downsampling (simulated via smaller images)
+func BenchmarkDownsampling_Scale(b *testing.B) {
+	img := createTestImage(2550, 3300) // 300 DPI Letter
+    
+    // Test different scaling factors implicitly by resizing
+    // Note: In real app, we usually render at target DPI, but this simulates
+    // the cost difference of processing smaller images vs larger ones
+    
+	b.Run("Full_300DPI", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			visual.ComputeHistogram(img)
+		}
+	})
+    
+    img150 := createTestImage(1275, 1650) // 150 DPI
+	b.Run("Half_150DPI", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			visual.ComputeHistogram(img150)
+		}
+	})
+
+    img72 := createTestImage(612, 792) // 72 DPI
+	b.Run("Thumbnail_72DPI", func(b *testing.B) {
+		for i := 0; i < b.N; i++ {
+			visual.ComputeHistogram(img72)
+		}
+	})
+}
