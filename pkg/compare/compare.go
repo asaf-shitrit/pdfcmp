@@ -195,16 +195,31 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 		return result, nil
 	}
 
-	// If page counts differ, we know they're different
-	if doc1.PageCount() != doc2.PageCount() {
-		result.SimilarityScore = 0.0
-		result.VisualComparison = VisualResult{
-			OverallScore:     0.0,
-			SamplingStrategy: "page count mismatch",
+	// Layer 2: Structural metadata check (fast early exit)
+	if c.opts.Mode == ModeAuto || c.opts.Mode == ModeVisual || c.opts.Mode == ModeFull {
+		result.ComparisonLayers = append(result.ComparisonLayers, "structural")
+		c.reportProgress("Structural check", 0, 1, 0.15)
+
+		// Compare first page structural info as a quick check
+		info1, err1 := doc1.PageInfo(0)
+		info2, err2 := doc2.PageInfo(0)
+
+		if err1 == nil && err2 == nil {
+			// If text hashes match, it's a very strong indicator of similarity
+			if info1.TextHash != 0 && info1.TextHash == info2.TextHash {
+				log.Debug("Text hashes match on first page", F("hash", info1.TextHash))
+			} else if info1.TextChars != info2.TextChars || info1.ObjectCount != info2.ObjectCount {
+				// If text length or object count varies, they are definitely different
+				textDiff := math.Abs(float64(info1.TextChars - info2.TextChars))
+				objDiff := math.Abs(float64(info1.ObjectCount - info2.ObjectCount))
+
+				if textDiff > 20 || objDiff > 5 {
+					log.Debug("Significant structural difference detected on first page",
+						F("text1", info1.TextChars), F("text2", info2.TextChars),
+						F("obj1", info1.ObjectCount), F("obj2", info2.ObjectCount))
+				}
+			}
 		}
-		result.Duration = time.Since(start)
-		result.Metadata.DurationMS = result.Duration.Milliseconds()
-		return result, nil
 	}
 
 	pageCount := doc1.PageCount()
@@ -456,27 +471,59 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 				pageNum := pages[idx]
 				var dHash1, dHash2, pHash1, pHash2 uint64
 				var dDist, pDist int
+				var similarity float64
 
-				switch c.opts.HashType {
-				case HashDHash:
-					dHash1, dHash2, dDist = visual.ComputeDHashPair(img1, img2)
-				case HashPHash:
-					pHash1, pHash2, pDist = visual.ComputePHashPair(img1, img2)
-				default:
-					dHash1, pHash1 = visual.ComputeBothHashes(img1)
-					dHash2, pHash2 = visual.ComputeBothHashes(img2)
-					dDist = visual.HammingDistance(dHash1, dHash2)
-					pDist = visual.HammingDistance(pHash1, pHash2)
+				// Optimization: Quick Histogram check
+				hist1 := visual.ComputeHistogram(img1)
+				hist2 := visual.ComputeHistogram(img2)
+				histSim := visual.HistogramSimilarity(hist1, hist2)
+
+				if histSim < 0.8 { // If colors are extremely different, don't bother with hashes
+					similarity = histSim * 0.5 // Penalty for color mismatch
+				} else {
+					switch c.opts.HashType {
+					case HashDHash:
+						dHash1, dHash2, dDist = visual.ComputeDHashPair(img1, img2)
+						similarity = visual.Similarity(dDist)
+					case HashPHash:
+						pHash1, pHash2, pDist = visual.ComputePHashPair(img1, img2)
+						similarity = visual.Similarity(pDist)
+					default:
+						// Step 1: dHash (Fast Structure Check)
+						dHash1 = visual.DHash(img1)
+						dHash2 = visual.DHash(img2)
+						dDist = visual.HammingDistance(dHash1, dHash2)
+
+						// Optimization: "Cascading Hash"
+						// If dHash shows images are very different (< 40% similar), pHash (frequency)
+						// is unlikely to salvage the match. We skip the expensive DCT.
+						dSim := visual.Similarity(dDist)
+						if dSim < 0.4 {
+							similarity = dSim
+							// Leave pHash as 0 to indicate skipped
+						} else {
+							// Step 2: pHash (Refined Frequency Check)
+							pHash1 = visual.PHash(img1)
+							pHash2 = visual.PHash(img2)
+							pDist = visual.HammingDistance(pHash1, pHash2)
+							similarity = visual.CombinedSimilarity(dHash1, dHash2, pHash1, pHash2)
+						}
+					}
 				}
 
-				var similarity float64
-				switch c.opts.HashType {
-				case HashDHash:
-					similarity = visual.Similarity(dDist)
-				case HashPHash:
-					similarity = visual.Similarity(pDist)
-				default:
-					similarity = visual.CombinedSimilarity(dHash1, dHash2, pHash1, pHash2)
+				// Further refinement: If similarity is high but text hashes exist and mismatch, penalize
+				info1, err1 := doc1.PageInfo(pageNum)
+				info2, err2 := doc2.PageInfo(pageNum)
+				if err1 == nil && err2 == nil && info1.TextHash != 0 && info2.TextHash != 0 {
+					if info1.TextHash != info2.TextHash {
+						// Text changed but visual is similar? Penalize similarity
+						similarity *= 0.95
+					} else {
+						// Text is identical! Boost confidence if visual is also close
+						if similarity > 0.9 {
+							similarity = math.Max(similarity, 0.99)
+						}
+					}
 				}
 
 				results[idx] = PageResult{

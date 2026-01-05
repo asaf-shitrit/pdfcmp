@@ -82,8 +82,8 @@ Benchmarks run on an Apple M2 Pro:
 | :--- | :--- | :--- | :--- |
 | **Identical Docs** | Bytewise | ~1.5ms | > 8 GB/s |
 | **Color Check** | Histogram | ~0.7ms | **2x faster than dHash** |
-| **10-page PDF** | Visual | ~240ms | 41 pages/sec |
-| **100-page PDF** | Visual | ~1.6s | **62 pages/sec** |
+| **10-page PDF** | Visual | ~230ms | 43 pages/sec |
+| **100-page PDF** | Visual | ~1.15s | **87 pages/sec** |
 | | | | |
 | **Thumbnailing** | 72 DPI | ~0.3ms | **17x faster than 300DPI** |
 
