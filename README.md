@@ -87,6 +87,19 @@ Benchmarks run on an Apple M2 Pro:
 | | | | |
 | **Thumbnailing** | 72 DPI | ~0.3ms | **17x faster than 300DPI** |
 
+## Accuracy & Robustness
+
+The tool combines **dHash** (structure) and **pHash** (frequency) to remain robust against various degradations:
+
+| Scenario | Combined Score | Result |
+| :--- | :--- | :--- |
+| **Identical** | 100% | ✅ Pass |
+| **Shift (1px)** | 98.4% | ✅ Pass |
+| **Shift (5px)** | 92.2% | ✅ Pass |
+| **Resize (90%)** | 98.4% | ✅ Pass |
+| **Noise (5%)** | 92.2% | ✅ Pass |
+| **Brightness (+10%)** | 98.4% | ✅ Pass |
+
 ## Development
 
 - **Tests**: `make test`
