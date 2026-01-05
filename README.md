@@ -1,110 +1,154 @@
-# similar-pdf
+# pdfcmp 📄🔍
 
-> **A high-performance, multi-layer PDF comparison tool written in Go.**
+[![Go Reference](https://pkg.go.dev/badge/github.com/asafshitrit/pdfcmp.svg)](https://pkg.go.dev/github.com/asafshitrit/pdfcmp)
+[![Go Version](https://img.shields.io/badge/go-1.24+-00ADD8.svg)](https://golang.org)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Build Status](https://github.com/asaf-shitrit/pdfcmp/actions/workflows/go.yml/badge.svg)](https://github.com/asaf-shitrit/pdfcmp/actions)
 
-`similar-pdf` is a CLI tool and Go library designed to efficiently detect whether two PDF files are identical or visually similar. It employs a smart multi-stage pipeline to strictly minimize the amount of work required for each comparison, making it suitable for high-throughput environments.
+**pdfcmp** is a high-performance, multi-layered PDF comparison tool and Go library. It efficiently detects whether two PDF files are identical or visually similar by using a fail-fast pipeline that combines lightning-fast byte hashing with sophisticated perceptual visual analysis.
 
-![License](https://img.shields.io/badge/license-MIT-blue.svg)
-![Go Version](https://img.shields.io/badge/go-1.21+-00ADD8.svg)
-![Coverage](https://img.shields.io/badge/coverage-80%25-green.svg)
+---
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **Extreme Performance**: Capable of processing **60+ pages per second** on modern hardware.
-- **Smart Pipeline**:
-  1.  **Metadata Check**: Files with different sizes/page counts are rejected immediately ($<1ms$).
-  2.  **Byte-wise Check**: Uses **xxHash64** (~9 GB/s) to detect byte-identical files instantly.
-  3.  **Visual Check**: Renders pages using a high-performance **WebAssembly (PDFium)** engine.
-  4.  **Strategic Sampling**: For large documents, it compares a strategic subset ($\sqrt{n} + 2$) of pages first.
-- **Perceptual Hashing**: Uses robust **dHash** (Difference Hash) and **pHash** (Perceptual Hash) to detect visual similarity even if internal PDF structures differ.
-- **Concurrency**: Fully pipelined architecture overlaps rendering and hashing for maximum throughput.
+- **Blazing Fast**: Process **60+ pages per second** on modern hardware.
+- **Fail-Fast Pipeline**:
+    1. **Metadata**: Rejects files with different page counts or extreme size differences in $<1$ms.
+    2. **Byte-wise**: Detects binary-identical files instantly using **xxHash64** (~9 GB/s).
+    3. **Visual Thumbnails**: Renders key pages at low resolution to skip obviously different documents.
+    4. **Smart Sampling**: For large docs, analyzes a strategic subset ($\sqrt{n} + 2$) to predict similarity.
+    5. **Full Visual Analysis**: Performs deep analysis only when necessary.
+- **Perceptual Hashing**: Uses **dHash** and **pHash** to detect visual similarity regardless of internal PDF optimization or compression.
+- **Wasm-Powered Rendering**: Utilizes a high-performance **PDFium** engine compiled to WebAssembly for reliable, cross-platform rendering.
+- **Concurrency**: Parallel architectures maximize CPU utilization by overlapping rendering and analysis tasks.
+
+---
 
 ## 📦 Installation
 
+### CLI Tool
 ```bash
-# Install via Go
-go install github.com/asafshitrit/similar-pdf/cmd/pdfcompare@latest
+# Install directly via Go
+go install github.com/asafshitrit/pdfcmp/cmd/pdfcmp@latest
 ```
 
-Or build from source:
-
+### From Source
 ```bash
-git clone https://github.com/asafshitrit/similar-pdf.git
-cd similar-pdf
-make install
+git clone https://github.com/asaf-shitrit/pdfcmp.git
+cd pdfcmp
+make build
+# (Optional) Move to your bin path
+mv pdfcmp /usr/local/bin/
 ```
 
-## 🛠️ Usage
+---
+
+## 🛠️ CLI Usage
 
 ### Basic Comparison
-Compare two files to see if they are visually similar.
-
+Compare two PDF files for visual similarity:
 ```bash
-pdfcompare compare file1.pdf file2.pdf
+pdfcmp compare file1.pdf file2.pdf
 ```
-*Returns exit code `0` if similar, `1` if different.*
+*Exits with code `0` if similar, `1` if different.*
 
-### Options
+### Advanced Options
 ```bash
-# Set custom similarity threshold (default 0.95)
-pdfcompare compare a.pdf b.pdf --threshold 0.99
+# Set custom similarity threshold (0.0 to 1.0)
+pdfcmp compare a.pdf b.pdf --threshold 0.99
 
-# Force full visual comparison (scan every page)
-pdfcompare compare a.pdf b.pdf --sampling all
+# Force analysis of every single page (ignores sampling)
+pdfcmp compare a.pdf b.pdf --sampling all
 
-# Output as JSON
-pdfcompare compare a.pdf b.pdf --format json
+# Output detailed results as JSON
+pdfcmp compare a.pdf b.pdf --format json
 
-# Verbose output (show progress)
-pdfcompare compare a.pdf b.pdf -v
+# Verbose mode with real-time progress
+pdfcmp compare a.pdf b.pdf -v
 ```
 
-### Quick Mode
-If you only care about byte-for-byte identity (fastest):
+### Quick Byte-wise Check
+Only check if files are bit-for-bit identical:
 ```bash
-pdfcompare quick file1.pdf file2.pdf
+pdfcmp quick file1.pdf file2.pdf
 ```
+
+---
+
+## 📚 Library Usage (Go)
+
+You can easily integrate `pdfcmp` into your own Go projects.
+
+```go
+import (
+    "context"
+    "fmt"
+    "github.com/asafshitrit/pdfcmp/pkg/compare"
+)
+
+func main() {
+    ctx := context.Background()
+    
+    // Initialize comparer with options
+    cmp, _ := compare.New(
+        compare.WithThreshold(0.98),
+        compare.WithDPI(150),
+    )
+    defer cmp.Close()
+
+    // Run comparison
+    result, err := cmp.Compare(ctx, "a.pdf", "b.pdf")
+    if err != nil {
+        panic(err)
+    }
+
+    if result.Similar {
+        fmt.Printf("Visual Match! Score: %.2f%%\n", result.SimilarityScore * 100)
+    } else {
+        fmt.Println("Documents are different.")
+    }
+}
+```
+
+---
 
 ## ⚡ Benchmarks
 
-Benchmarks run on an Apple M2 Pro:
+*Tested on Apple M2 Pro (12 cores, 32GB RAM)*
 
-| Scenario | Time | Throughput |
-| :--- | :--- | :--- |
-| **Identical Files** | ~1.5ms | > 8 GB/s |
-| **Visual Check (Sampled)** | ~1.0s | N/A |
-| **Full Visual (Large Doc)** | ~2.0s | **63 pages/sec** |
+| Scenario | Mode | Execution Time | Speed |
+| :--- | :--- | :--- | :--- |
+| **Identical Documents** | Bytewise | ~1.5ms | > 8 GB/s |
+| **Medium PDF (10pgs)** | Visual | ~240ms | 41 pages/sec |
+| **Large PDF (100pgs)** | Visual | ~1.6s | **62 pages/sec** |
 
-To run benchmarks yourself:
-```bash
-./bench/run_cli_benchmarks.sh
-```
+---
 
-## 🧠 How It Works
+## 🧠 Comparison Pipeline
 
-The tool uses a "fail-fast" pipeline strategy:
+1. **Layer 1 (Metadata)**: Instant rejection based on page count.
+2. **Layer 2 (Bytewise)**: xxHash64 check for binary identity.
+3. **Layer 3 (Thumbnails)**: Renders first and last page at 72 DPI.
+4. **Layer 4 (Sampling)**: Stratified sampling of the entire document.
+5. **Layer 5 (Deep Scan)**: Full document rendering and perceptual verification.
 
-1.  **Layer 1 (Metadata)**: If file sizes differ by a huge margin (and byte mode is on), or page counts differ, exit immediately.
-2.  **Layer 2 (Bytewise)**: Hashes files with xxHash64. If hashes match, they are 100% identical. Cost: Minimal.
-3.  **Layer 3 (Thumbnail)**: Renders the first and last page at low DPI. If these look totally different, stop.
-4.  **Layer 4 (Sampling)**: For large docs, checks a spread of pages ($\sqrt{n} + 2$). If these match, the document is likely the same.
-5.  **Layer 5 (Full)**: Only if configured or if high-confidence is needed, render and hash every single page.
+---
 
 ## 👨‍💻 Development
 
-### Requirements
-- Go 1.21+
+### Prerequisites
+- Go 1.24+
 - Make
 
-### Commands
+### Useful Commands
 ```bash
-make build      # Build binary
 make test       # Run unit tests
-make test-race  # Run tests with race detector
-make bench      # Run Go benchmarks
-make coverage   # Generate coverage report
+make bench      # Run performance benchmarks
+make coverage   # Generate test coverage report
+make lint       # Run golangci-lint
 ```
 
-## 📄 License
+---
 
-MIT License. See [LICENSE](LICENSE) for details.
+## 📄 License
+MIT License - Copyright (c) 2026 Asaf Shitrit. See [LICENSE](LICENSE) for details.

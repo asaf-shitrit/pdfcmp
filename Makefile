@@ -1,7 +1,7 @@
 .PHONY: build test bench clean install lint fmt
 
 # Binary name
-BINARY=pdfcompare
+BINARY=pdfcmp
 
 # Build flags
 LDFLAGS=-ldflags "-s -w"
@@ -11,15 +11,15 @@ all: build
 
 # Build the binary
 build:
-	go build $(LDFLAGS) -o $(BINARY) ./cmd/pdfcompare
+	go build $(LDFLAGS) -o $(BINARY) ./cmd/pdfcmp
 
 # Build with race detector
 build-race:
-	go build -race -o $(BINARY) ./cmd/pdfcompare
+	go build -race -o $(BINARY) ./cmd/pdfcmp
 
 # Install to GOPATH/bin
 install:
-	go install $(LDFLAGS) ./cmd/pdfcompare
+	go install $(LDFLAGS) ./cmd/pdfcmp
 
 # Run tests
 test:
@@ -98,11 +98,11 @@ dev: fmt test build
 
 # Release build (optimized)
 release:
-	CGO_ENABLED=1 go build $(LDFLAGS) -o $(BINARY) ./cmd/pdfcompare
+	CGO_ENABLED=1 go build $(LDFLAGS) -o $(BINARY) ./cmd/pdfcmp
 
 # Cross-compile (requires appropriate toolchains)
 build-linux:
-	GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build $(LDFLAGS) -o $(BINARY)-linux-amd64 ./cmd/pdfcompare
+	GOOS=linux GOARCH=amd64 CGO_ENABLED=1 go build $(LDFLAGS) -o $(BINARY)-linux-amd64 ./cmd/pdfcmp
 
 # Help
 help:

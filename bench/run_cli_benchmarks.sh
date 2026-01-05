@@ -1,9 +1,9 @@
 #!/bin/bash
 
 # PDF Comparison CLI Benchmark Script
-# This script runs the pdfcompare tool against various scenarios to measure real-world performance.
+# This script runs the pdfcmp tool against various scenarios to measure real-world performance.
 
-BINARY="./pdfcompare"
+BINARY="./pdfcmp"
 FIXTURES="bench/fixtures"
 
 # Ensure binary exists

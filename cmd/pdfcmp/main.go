@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"syscall"
 
-	"github.com/asafshitrit/similar-pdf/pkg/compare"
+	"github.com/asafshitrit/pdfcmp/pkg/compare"
 	"github.com/spf13/cobra"
 )
 
@@ -31,7 +31,7 @@ var (
 
 func main() {
 	rootCmd := &cobra.Command{
-		Use:   "pdfcompare",
+		Use:   "pdfcmp",
 		Short: "Compare PDF files byte-wise and visually",
 		Long: `A high-performance PDF comparison tool that uses perceptual hashing
 (dHash and pHash) to detect visual similarities between PDF documents.
@@ -85,7 +85,7 @@ Features:
 		Use:   "version",
 		Short: "Print version information",
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("pdfcompare v0.1.0")
+			fmt.Println("pdfcmp v0.1.0")
 		},
 	}
 

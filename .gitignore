@@ -1,5 +1,5 @@
 # Binaries
-/pdfcompare
+/pdfcmp
 *.exe
 *.test
 *.test.exe
