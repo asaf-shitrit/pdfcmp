@@ -3,6 +3,7 @@ package visual
 import (
 	"image"
 	"image/color"
+	"image/draw"
 
 	"github.com/nfnt/resize"
 )
@@ -54,31 +55,6 @@ func ComputeDHashPair(img1, img2 image.Image) (uint64, uint64, int) {
 	return h1, h2, HammingDistance(h1, h2)
 }
 
-// DHashVertical computes a vertical difference hash.
-// Instead of comparing left-right, it compares top-bottom.
-// Useful when combined with horizontal dHash for better accuracy.
-func DHashVertical(img image.Image) uint64 {
-	// Resize to 8x9 (transposed dimensions)
-	resized := resize.Resize(dHashHeight, dHashWidth, img, resize.NearestNeighbor)
-
-	var hash uint64
-	bit := 0
-
-	for y := 0; y < dHashWidth-1; y++ {
-		for x := 0; x < dHashHeight; x++ {
-			top := grayscaleAt(resized, x, y)
-			bottom := grayscaleAt(resized, x, y+1)
-
-			if top < bottom {
-				hash |= 1 << uint(bit)
-			}
-			bit++
-		}
-	}
-
-	return hash
-}
-
 // grayscaleAt returns the grayscale value (0-255) at the given pixel.
 func grayscaleAt(img image.Image, x, y int) uint8 {
 	c := img.At(x, y)
@@ -120,15 +96,19 @@ func DHashFromGray(img *image.Gray) uint64 {
 }
 
 // ToGrayscale converts any image to grayscale.
+// Uses draw.Draw for efficient bulk conversion instead of pixel-by-pixel iteration.
 func ToGrayscale(img image.Image) *image.Gray {
+	// Fast path: already grayscale
+	if g, ok := img.(*image.Gray); ok {
+		return g
+	}
+
 	bounds := img.Bounds()
 	gray := image.NewGray(bounds)
 
-	for y := bounds.Min.Y; y < bounds.Max.Y; y++ {
-		for x := bounds.Min.X; x < bounds.Max.X; x++ {
-			gray.Set(x, y, img.At(x, y))
-		}
-	}
+	// Use draw.Draw for efficient bulk conversion
+	// The draw package handles color model conversion internally
+	draw.Draw(gray, bounds, img, bounds.Min, draw.Src)
 
 	return gray
 }

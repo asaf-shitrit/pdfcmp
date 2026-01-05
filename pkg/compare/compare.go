@@ -6,6 +6,7 @@ import (
 	"image"
 	"math"
 	"os"
+	"path/filepath"
 	"sync"
 	"time"
 
@@ -34,6 +35,11 @@ func New(opts ...Option) (Comparer, error) {
 	options := DefaultOptions()
 	options.Apply(opts...)
 
+	// Validate options before proceeding
+	if err := options.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid options: %w", err)
+	}
+
 	renderer, err := render.NewPdfiumRenderer()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create renderer: %w", err)
@@ -56,6 +62,13 @@ func Quick(pdf1, pdf2 string) (bool, error) {
 
 func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, error) {
 	start := time.Now()
+	log := c.opts.Logger
+
+	log.Info("Starting PDF comparison",
+		F("file1", pdf1),
+		F("file2", pdf2),
+		F("dpi", c.opts.DPI),
+		F("workers", c.opts.Workers))
 
 	result := &Result{
 		Metadata: Metadata{
@@ -63,6 +76,23 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 			File2: pdf2,
 		},
 		ComparisonLayers: []string{},
+	}
+
+	// Check for self-comparison (comparing file to itself)
+	abs1, err1 := filepath.Abs(pdf1)
+	abs2, err2 := filepath.Abs(pdf2)
+	if err1 == nil && err2 == nil && abs1 == abs2 {
+		log.Debug("Self-comparison detected, returning identical")
+		// Same file - always identical
+		result.Identical = true
+		result.SimilarityScore = 1.0
+		result.VisualComparison = VisualResult{
+			OverallScore:     1.0,
+			SamplingStrategy: "skipped (same file)",
+		}
+		result.Duration = time.Since(start)
+		result.Metadata.DurationMS = result.Duration.Milliseconds()
+		return result, nil
 	}
 
 	// Get file info
@@ -96,8 +126,13 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 			SizesMatch: byteResult.SizesMatch,
 		}
 
+		log.Debug("Byte comparison complete",
+			F("identical", byteResult.Identical),
+			F("sizesMatch", byteResult.SizesMatch))
+
 		// Early exit if byte-identical
 		if byteResult.Identical {
+			log.Info("Files are byte-identical, skipping visual comparison")
 			result.Identical = true
 			result.SimilarityScore = 1.0
 			result.VisualComparison = VisualResult{
@@ -134,6 +169,32 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 	result.Metadata.Pages1 = doc1.PageCount()
 	result.Metadata.Pages2 = doc2.PageCount()
 
+	// Handle empty PDFs (0 pages)
+	if doc1.PageCount() == 0 && doc2.PageCount() == 0 {
+		log.Debug("Both PDFs have 0 pages, treating as identical")
+		result.Identical = true
+		result.SimilarityScore = 1.0
+		result.VisualComparison = VisualResult{
+			OverallScore:     1.0,
+			SamplingStrategy: "empty documents",
+		}
+		result.Duration = time.Since(start)
+		result.Metadata.DurationMS = result.Duration.Milliseconds()
+		return result, nil
+	}
+
+	if doc1.PageCount() == 0 || doc2.PageCount() == 0 {
+		log.Debug("One PDF has 0 pages", F("pages1", doc1.PageCount()), F("pages2", doc2.PageCount()))
+		result.SimilarityScore = 0.0
+		result.VisualComparison = VisualResult{
+			OverallScore:     0.0,
+			SamplingStrategy: "empty document mismatch",
+		}
+		result.Duration = time.Since(start)
+		result.Metadata.DurationMS = result.Duration.Milliseconds()
+		return result, nil
+	}
+
 	// If page counts differ, we know they're different
 	if doc1.PageCount() != doc2.PageCount() {
 		result.SimilarityScore = 0.0
@@ -166,7 +227,7 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 
 		// Check if thumbnails are very different (early exit)
 		avgSimilarity := averageSimilarity(thumbnailResults)
-		if avgSimilarity < 0.5 {
+		if avgSimilarity < ThumbnailEarlyExitThresh {
 			result.SimilarityScore = avgSimilarity
 			result.VisualComparison = VisualResult{
 				OverallScore:     avgSimilarity,
@@ -260,6 +321,12 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 	result.Duration = time.Since(start)
 	result.Metadata.DurationMS = result.Duration.Milliseconds()
 
+	log.Info("Comparison complete",
+		F("similarity", result.SimilarityScore),
+		F("identical", result.Identical),
+		F("pagesCompared", result.VisualComparison.PagesCompared),
+		F("duration", result.Duration))
+
 	return result, nil
 }
 
@@ -271,14 +338,24 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 		return nil, nil
 	}
 
+	// Adjust workers based on memory constraints
+	effectiveWorkers := c.adjustWorkersForMemory(doc1)
+
 	c.reportProgress("Pipelined processing", 0, len(pages), 0.3)
 
 	// Result storage
 	results := make([]PageResult, len(pages))
-	
-	// Channels for rendered pages
-	out1 := make(chan render.RenderedPage, len(pages))
-	out2 := make(chan render.RenderedPage, len(pages))
+
+	// Buffer size for backpressure: 2x workers to allow pipeline overlap
+	// This prevents unbounded memory growth for large documents
+	bufferSize := effectiveWorkers * 2
+	if bufferSize > len(pages) {
+		bufferSize = len(pages)
+	}
+
+	// Channels for rendered pages (bounded for backpressure)
+	out1 := make(chan render.RenderedPage, bufferSize)
+	out2 := make(chan render.RenderedPage, bufferSize)
 
 	// Start streamers
 	var wgRender sync.WaitGroup
@@ -310,17 +387,22 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 	}
 	pairs := make(map[int]*pair)
 	var pairsMu sync.Mutex
-	
-	hashJobs := make(chan int, len(pages))
+
+	// Bounded channels for backpressure
+	hashJobs := make(chan int, bufferSize)
 	var wgReceivers sync.WaitGroup
 	wgReceivers.Add(2)
-	
+
+	// Channel for per-page render errors (bounded)
+	pageErrCh := make(chan error, bufferSize*2)
+
 	// Receiver for Doc 1
 	go func() {
 		defer wgReceivers.Done()
 		for res := range out1 {
 			if res.Err != nil {
-				continue // Error will be handled by errCh
+				pageErrCh <- fmt.Errorf("doc1 page %d: %w", pages[res.Index], res.Err)
+				continue
 			}
 			pairsMu.Lock()
 			if p, ok := pairs[res.Index]; ok {
@@ -340,6 +422,7 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 		defer wgReceivers.Done()
 		for res := range out2 {
 			if res.Err != nil {
+				pageErrCh <- fmt.Errorf("doc2 page %d: %w", pages[res.Index], res.Err)
 				continue
 			}
 			pairsMu.Lock()
@@ -355,11 +438,11 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 		}
 	}()
 
-	// Hashing Workers
+	// Hashing Workers (use memory-adjusted worker count)
 	var wgHash sync.WaitGroup
-	processedChan := make(chan int, len(pages))
-	
-	for i := 0; i < c.opts.Workers; i++ {
+	processedChan := make(chan int, bufferSize)
+
+	for i := 0; i < effectiveWorkers; i++ {
 		wgHash.Add(1)
 		go func() {
 			defer wgHash.Done()
@@ -418,12 +501,16 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 		close(hashJobs)
 	}()
 
-	// Wait for rendering to complete or error
+	// Wait for rendering to complete, collecting stream-level errors
+	var renderErrors []error
 	count := 0
 	for count < len(pages) {
 		select {
 		case err := <-errCh:
-			return nil, err
+			if err != nil {
+				renderErrors = append(renderErrors, err)
+			}
+			// Continue processing - other pages may still succeed
 		case <-processedChan:
 			count++
 		case <-ctx.Done():
@@ -431,8 +518,29 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 		}
 	}
 
-	// Wait for remaining workers to finish (though they should be done by now)
+	// Wait for remaining workers to finish
 	wgHash.Wait()
+
+	// Wait for receivers to complete and close pageErrCh
+	wgReceivers.Wait()
+
+	// Collect any per-page render errors
+	close(pageErrCh)
+	for err := range pageErrCh {
+		renderErrors = append(renderErrors, err)
+	}
+
+	// Report aggregated render errors if any
+	if len(renderErrors) > 0 {
+		if len(renderErrors) == 1 {
+			return nil, renderErrors[0]
+		}
+		errMsg := fmt.Sprintf("%d render errors occurred:", len(renderErrors))
+		for i, err := range renderErrors {
+			errMsg += fmt.Sprintf("\n  [%d] %v", i+1, err)
+		}
+		return nil, fmt.Errorf("%s", errMsg)
+	}
 
 	return results, nil
 }
@@ -453,6 +561,40 @@ func (c *comparer) Close() error {
 		return c.renderer.Close()
 	}
 	return nil
+}
+
+// adjustWorkersForMemory reduces worker count if memory limit would be exceeded.
+// Each worker renders pages from both documents concurrently, so we need memory
+// for 2 pages per worker at the given DPI.
+func (c *comparer) adjustWorkersForMemory(doc render.Document) int {
+	workers := c.opts.Workers
+	maxMemBytes := int64(c.opts.MaxMemoryMB) * 1024 * 1024
+
+	// Get page info to estimate memory per page
+	pageInfo, err := doc.PageInfo(0)
+	if err != nil {
+		// Can't estimate, use configured workers
+		return workers
+	}
+
+	// Estimate memory per page (4 bytes per pixel for RGBA)
+	memPerPage := render.EstimateMemoryUsage(pageInfo.WidthPts, pageInfo.HeightPts, c.opts.DPI)
+
+	// Each worker needs memory for 2 pages (one from each document)
+	memPerWorker := memPerPage * 2
+
+	// Calculate max workers based on memory
+	if memPerWorker > 0 {
+		maxWorkers := int(maxMemBytes / memPerWorker)
+		if maxWorkers < 1 {
+			maxWorkers = 1 // Always allow at least 1 worker
+		}
+		if workers > maxWorkers {
+			workers = maxWorkers
+		}
+	}
+
+	return workers
 }
 
 // strategicSample returns page indices for strategic sampling.

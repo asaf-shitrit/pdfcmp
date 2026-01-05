@@ -1,9 +1,26 @@
 package compare
 
 import (
+	"errors"
+	"fmt"
 	"runtime"
 
 	"github.com/asafshitrit/similar-pdf/pkg/render"
+)
+
+// Validation constants
+const (
+	MinDPI     = 36   // Minimum reasonable DPI
+	MaxDPI     = 1200 // Maximum reasonable DPI (prevents memory issues)
+	MinWorkers = 1
+	MaxWorkers = 64
+)
+
+// Default values
+const (
+	DefaultSimilarityThreshold = 0.95 // Default threshold for similarity matching
+	DefaultMaxMemoryMB         = 512  // Default memory limit in MB
+	ThumbnailEarlyExitThresh   = 0.5  // Threshold below which thumbnail check exits early
 )
 
 // Mode specifies the comparison mode
@@ -71,6 +88,9 @@ type Options struct {
 
 	// ProgressCallback is called with progress updates
 	ProgressCallback func(Progress)
+
+	// Logger for structured logging (default: NopLogger)
+	Logger Logger
 }
 
 // Progress represents comparison progress
@@ -88,9 +108,10 @@ func DefaultOptions() Options {
 		HashType:            HashBoth,
 		DPI:                 render.DPIStandard,
 		Workers:             runtime.NumCPU(),
-		SimilarityThreshold: 0.95,
+		SimilarityThreshold: DefaultSimilarityThreshold,
 		Sampling:            SamplingAuto,
-		MaxMemoryMB:         512,
+		MaxMemoryMB:         DefaultMaxMemoryMB,
+		Logger:              NopLogger{},
 	}
 }
 
@@ -153,9 +174,43 @@ func WithProgress(fn func(Progress)) Option {
 	}
 }
 
+// WithLogger sets a structured logger for debugging and monitoring
+func WithLogger(logger Logger) Option {
+	return func(o *Options) {
+		o.Logger = logger
+	}
+}
+
 // Apply applies all options to a base Options struct
 func (o *Options) Apply(opts ...Option) {
 	for _, opt := range opts {
 		opt(o)
 	}
+}
+
+// Validate checks that all options are within acceptable ranges.
+// Returns an error if any option is invalid.
+func (o *Options) Validate() error {
+	var errs []error
+
+	if o.DPI < MinDPI || o.DPI > MaxDPI {
+		errs = append(errs, fmt.Errorf("DPI must be between %d and %d, got %d", MinDPI, MaxDPI, o.DPI))
+	}
+
+	if o.Workers < MinWorkers || o.Workers > MaxWorkers {
+		errs = append(errs, fmt.Errorf("workers must be between %d and %d, got %d", MinWorkers, MaxWorkers, o.Workers))
+	}
+
+	if o.SimilarityThreshold < 0.0 || o.SimilarityThreshold > 1.0 {
+		errs = append(errs, fmt.Errorf("similarity threshold must be between 0.0 and 1.0, got %f", o.SimilarityThreshold))
+	}
+
+	if o.MaxMemoryMB <= 0 {
+		errs = append(errs, fmt.Errorf("max memory must be positive, got %d", o.MaxMemoryMB))
+	}
+
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return nil
 }

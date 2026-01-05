@@ -30,6 +30,12 @@ type pdfiumDocument struct {
 	password  string
 }
 
+// Pool size limits
+const (
+	MinPoolSize = 4  // Minimum number of WebAssembly instances
+	MaxPoolSize = 16 // Maximum number of WebAssembly instances
+)
+
 // initPool is a singleton pool for WebAssembly instances
 var (
 	globalPool     pdfium.Pool
@@ -42,11 +48,11 @@ func getPool(maxWorkers int) (pdfium.Pool, error) {
 	globalPoolOnce.Do(func() {
 		// Size pool based on workers needed
 		poolSize = maxWorkers
-		if poolSize < 4 {
-			poolSize = 4
+		if poolSize < MinPoolSize {
+			poolSize = MinPoolSize
 		}
-		if poolSize > 16 {
-			poolSize = 16
+		if poolSize > MaxPoolSize {
+			poolSize = MaxPoolSize
 		}
 		globalPool, globalPoolErr = webassembly.Init(webassembly.Config{
 			MinIdle:  1,
@@ -328,11 +334,24 @@ func (d *pdfiumDocument) RenderPagesStream(ctx context.Context, pageNums []int, 
 		close(errors)
 	}()
 
-	// Collect first error if any
+	// Collect all errors
+	var allErrors []error
 	for err := range errors {
 		if err != nil {
-			return err
+			allErrors = append(allErrors, err)
 		}
+	}
+
+	// Return aggregated errors if any occurred
+	if len(allErrors) > 0 {
+		if len(allErrors) == 1 {
+			return allErrors[0]
+		}
+		errMsg := fmt.Sprintf("%d worker errors occurred:", len(allErrors))
+		for i, err := range allErrors {
+			errMsg += fmt.Sprintf("\n  [%d] %v", i+1, err)
+		}
+		return fmt.Errorf("%s", errMsg)
 	}
 
 	return nil

@@ -73,10 +73,34 @@ type Renderer interface {
 	Close() error
 }
 
-// CalculatePixelDimensions calculates pixel dimensions for a page at given DPI
+// DPI limits to prevent overflow
+const (
+	MinAllowedDPI = 1
+	MaxAllowedDPI = 2400 // Beyond this, memory usage becomes excessive
+)
+
+// CalculatePixelDimensions calculates pixel dimensions for a page at given DPI.
+// DPI is clamped to safe bounds to prevent integer overflow.
 func CalculatePixelDimensions(widthPts, heightPts float64, dpi int) (widthPx, heightPx int) {
+	// Clamp DPI to safe bounds
+	if dpi < MinAllowedDPI {
+		dpi = MinAllowedDPI
+	}
+	if dpi > MaxAllowedDPI {
+		dpi = MaxAllowedDPI
+	}
+
 	widthPx = int(widthPts * float64(dpi) / 72.0)
 	heightPx = int(heightPts * float64(dpi) / 72.0)
+
+	// Ensure non-negative dimensions
+	if widthPx < 0 {
+		widthPx = 0
+	}
+	if heightPx < 0 {
+		heightPx = 0
+	}
+
 	return
 }
 

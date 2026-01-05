@@ -68,14 +68,14 @@ func (p *Pool[T, R]) Process(ctx context.Context, jobs []Job[T, R]) ([]Result[R]
 
 	// Send jobs
 	go func() {
+		defer close(jobCh)
 		for _, job := range jobs {
 			select {
 			case <-ctx.Done():
-				break
+				return // Exit goroutine immediately on cancellation
 			case jobCh <- job:
 			}
 		}
-		close(jobCh)
 	}()
 
 	// Wait for workers to complete
