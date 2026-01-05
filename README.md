@@ -76,29 +76,75 @@ func main() {
 
 ## Performance
 
-Benchmarks run on an Apple M2 Pro:
+Benchmarks run on Apple M2 Pro with various PDF types (single-page, small 4-page, medium 10-page, large 30-page, and extra-large documents):
 
-| Scenario | Mode | Execution Time | Speed |
+### Fast-Path Optimizations
+| Scenario | Time | Notes |
+| :--- | :--- | :--- |
+| **Identical files (self-compare)** | 3.9μs | Text-first optimization bypasses rendering |
+| **Small identical (4 pages)** | 4.6μs | Early exit after metadata check |
+| **Byte-only mode** | 8.0μs | xxHash64 at ~8 GB/s |
+
+### Full Visual Comparison
+| Document Size | Pages | Time | Throughput |
 | :--- | :--- | :--- | :--- |
-| **Identical Docs** | Bytewise | ~1.5ms | > 8 GB/s |
-| **Color Check** | Histogram | ~0.7ms | **2x faster than dHash** |
-| **10-page PDF** | Visual | ~230ms | 43 pages/sec |
-| **100-page PDF** | Visual | ~1.15s | **87 pages/sec** |
-| | | | |
-| **Thumbnailing** | 72 DPI | ~0.3ms | **17x faster than 300DPI** |
+| **Small** | 4 | 129ms | 31 pages/sec |
+| **Medium** | 10 | 511ms | 20 pages/sec |
+| **Large** | 30 | 1.54s | **74 pages/sec** |
+
+### Sampling Strategies (10-page document)
+| Strategy | Time | Speedup |
+| :--- | :--- | :--- |
+| **Thumbnail only** (72 DPI) | 15ms | 22x faster |
+| **Strategic** (√n + 2 pages) | 85ms | 4x faster |
+| **Full** (all pages) | 338ms | baseline |
+
+### Hash Algorithm Performance
+| Algorithm | Time (medium doc) | Use Case |
+| :--- | :--- | :--- |
+| **Histogram** | <1ms | Color pre-filter (instant rejection) |
+| **DHash** | 89ms | Structural comparison |
+| **PHash** | 79ms | Frequency-based (DCT) |
+| **Both** | 113ms | Combined approach (best accuracy) |
+
+### DPI Impact (single page render + hash)
+| DPI | Time | Quality |
+| :--- | :--- | :--- |
+| **72** | 4.2ms | Thumbnail (good for hashing) |
+| **150** | 16.5ms | Standard (4x slower) |
+| **300** | 46.8ms | High-res (11x slower) |
 
 ## Accuracy & Robustness
 
-The tool combines **dHash** (structure) and **pHash** (frequency) to remain robust against various degradations:
+The tool combines **dHash** (structure), **pHash** (frequency), and **histogram** analysis to remain robust against various degradations:
 
-| Scenario | Combined Score | Result |
-| :--- | :--- | :--- |
-| **Identical** | 100% | ✅ Pass |
-| **Shift (1px)** | 98.4% | ✅ Pass |
-| **Shift (5px)** | 92.2% | ✅ Pass |
-| **Resize (90%)** | 98.4% | ✅ Pass |
-| **Noise (5%)** | 92.2% | ✅ Pass |
-| **Brightness (+10%)** | 98.4% | ✅ Pass |
+| Scenario | DHash | PHash | Combined | Histogram | Result |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| **Identical** | 100% | 100% | 100% | 100% | ✅ Pass |
+| **Shift (1px)** | 100% | 96.9% | 98.4% | 98.6% | ✅ Pass |
+| **Shift (5px)** | 98.4% | 85.9% | 92.2% | 98.7% | ✅ Pass |
+| **Resize (90%)** | 100% | 96.9% | 98.4% | 94.7% | ✅ Pass |
+| **Noise (5%)** | 82.8% | 93.8% | 88.3% | 98.7% | ✅ Pass |
+| **Brightness (+10%)** | 100% | 96.9% | 98.4% | 95.8% | ✅ Pass |
+| **Crop (center)** | 98.4% | 87.5% | 93.0% | 98.5% | ✅ Pass |
+
+**Key findings:**
+- **DHash** excels at detecting structural changes (shifts, brightness)
+- **PHash** better handles noise and compression artifacts
+- **Histogram** is excellent for quick color-based rejection
+- **Combined approach** provides best overall accuracy
+
+### Test Coverage
+
+Benchmarks include diverse PDF types to ensure robustness:
+- **Single-page**: Minimal overhead testing
+- **Small (4 pages)**: Quick documents with text and graphics
+- **Medium (10 pages)**: Standard reports and documents
+- **Large (30 pages)**: Complex multi-page documents
+- **Extra-large**: Stress testing with high page counts
+- **Graphic-heavy**: Image-rich presentations
+- **Mixed content**: Combined text, images, and vector graphics
+- **Scanned documents**: OCR'd documents with image-based pages
 
 ## Development
 

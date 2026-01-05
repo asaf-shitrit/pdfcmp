@@ -64,6 +64,18 @@ func main() {
 	fmt.Println("Creating xlarge.pdf (100 pages)...")
 	createTextPDF(filepath.Join(dir, "xlarge.pdf"), 100, "Extra Large Test Document", 42)
 
+	// 10. Mixed Content PDFs (Text + Graphics)
+	// This tests the hybrid Text-First + Visual fallback pipeline
+	fmt.Println("Creating mixed_a.pdf and mixed_b.pdf (50 pages)...")
+	createMixedPDF(filepath.Join(dir, "mixed_a.pdf"), 50, 42)
+	createMixedPDF(filepath.Join(dir, "mixed_b.pdf"), 50, 42)
+
+	// 11. Scanned-Simulated PDF (Images only, no text)
+	// This forces the "Text-First" check to fail and fallback to full visual match
+	fmt.Println("Creating scanned_a.pdf and scanned_b.pdf (Images only)...")
+	createImageOnlyPDF(filepath.Join(dir, "scanned_a.pdf"), 20, 42)
+	createImageOnlyPDF(filepath.Join(dir, "scanned_b.pdf"), 20, 42)
+
 	fmt.Println("\nAll fixtures generated successfully!")
 	fmt.Println("\nGenerated files:")
 	files, _ := filepath.Glob(filepath.Join(dir, "*.pdf"))
@@ -182,4 +194,61 @@ func createGraphicPDF(filename string, pages int, seed int64) {
 	}
 
 	pdf.OutputFileAndClose(filename)
+}
+
+func createMixedPDF(filename string, pages int, seed int64) {
+rand.Seed(seed)
+pdf := gofpdf.New("P", "mm", "A4", "")
+
+for i := 1; i <= pages; i++ {
+pdf.AddPage()
+
+isText := rand.Intn(2) == 0
+
+if isText {
+pdf.SetFont("Arial", "B", 16)
+pdf.Cell(40, 10, fmt.Sprintf("Mixed Doc (Text Page) - Page %d", i))
+pdf.Ln(20)
+pdf.SetFont("Arial", "", 12)
+for j := 0; j < 15; j++ {
+text := fmt.Sprintf("Line %d: This page contains searchable text content. Seed: %d", j+1, rand.Intn(1000))
+pdf.Cell(0, 10, text)
+pdf.Ln(8)
+}
+} else {
+for j := 0; j < 10; j++ {
+x := float64(10 + rand.Intn(180))
+y := float64(10 + rand.Intn(250))
+w := float64(20 + rand.Intn(50))
+h := float64(20 + rand.Intn(50))
+pdf.SetFillColor(rand.Intn(255), rand.Intn(255), rand.Intn(255))
+pdf.Rect(x, y, w, h, "F")
+}
+}
+
+pdf.SetY(-15)
+if isText {
+pdf.SetFont("Arial", "I", 8)
+pdf.Cell(0, 10, fmt.Sprintf("Page %d of %d", i, pages))
+}
+}
+
+pdf.OutputFileAndClose(filename)
+}
+
+func createImageOnlyPDF(filename string, pages int, seed int64) {
+rand.Seed(seed)
+pdf := gofpdf.New("P", "mm", "A4", "")
+
+for i := 1; i <= pages; i++ {
+pdf.AddPage()
+for j := 0; j < 20; j++ {
+x := float64(rand.Intn(210))
+y := float64(rand.Intn(297))
+r := float64(5 + rand.Intn(50))
+pdf.SetFillColor(rand.Intn(255), rand.Intn(255), rand.Intn(255))
+pdf.Circle(x, y, r, "F")
+}
+}
+pdf.OutputFileAndClose(filename)
 }

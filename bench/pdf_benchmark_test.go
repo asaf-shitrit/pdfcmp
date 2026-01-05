@@ -245,7 +245,7 @@ func BenchmarkFullCompare_XLarge(b *testing.B) {
 	}
 
 	pdf1 := filepath.Join(fixturesDir, "xlarge.pdf")
-	pdf2 := filepath.Join(fixturesDir, "xlarge.pdf") // Compare to self for byte-identical early exit
+	pdf2 := filepath.Join(fixturesDir, "xlarge.pdf") // Compare to self
 
 	cmp, err := compare.New()
 	if err != nil {

@@ -31,6 +31,9 @@ type PageInfo struct {
 	HeightPts   float64 // Height in points
 	WidthPx     int     // Width in pixels at current DPI
 	HeightPx    int     // Height in pixels at current DPI
+	TextChars   int     // Number of text characters on page
+	ObjectCount int     // Number of graphical objects on page
+	TextHash    uint64  // Hash of text content (if available)
 }
 
 // RenderedPage contains a rendered image and its index

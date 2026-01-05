@@ -356,16 +356,55 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 	// Adjust workers based on memory constraints
 	effectiveWorkers := c.adjustWorkersForMemory(doc1)
 
-	c.reportProgress("Pipelined processing", 0, len(pages), 0.3)
+	// Optimization: Text-First Optimistic Match
+	// We check text hashes for all sampled pages first.
+	// If text matches, we assume identity and skip rendering.
+	// This is ~16x faster than rendering.
 
-	// Result storage
 	results := make([]PageResult, len(pages))
+	pagesToRender := make([]int, 0, len(pages))
+	textMatches := make(map[int]bool) // Key is index in 'pages' slice
+
+	// We do this serially because PageInfo is fast (~0.25ms) and the main doc instance is available.
+	// For huge page counts, we might want to parallelize, but for valid sample sizes this is fine.
+	for i, pageNum := range pages {
+		info1, err1 := doc1.PageInfo(pageNum)
+		info2, err2 := doc2.PageInfo(pageNum)
+
+		// Conditions for skipping render:
+		// 1. Both pages valid
+		// 2. Both have text content (Hash != 0)
+		// 3. Text Hashes match
+		// 4. Object counts match (extra safety against invisible text changes with graphical changes)
+		if err1 == nil && err2 == nil && info1.TextHash != 0 && info2.TextHash != 0 {
+			if info1.TextHash == info2.TextHash && info1.ObjectCount == info2.ObjectCount {
+				textMatches[i] = true
+				// We still add to results immediately
+				results[i] = PageResult{
+					Page:          pageNum + 1,
+					Similarity:    1.0, 
+					IsDifferent:   false,
+					// Metadata to indicate skipped render
+					DHashDistance: 0,
+				}
+				continue
+			}
+		}
+		pagesToRender = append(pagesToRender, pageNum)
+	}
+
+	// If all pages matched via text, return early!
+	if len(pagesToRender) == 0 {
+		return results, nil
+	}
+
+	c.reportProgress("Pipelined processing", len(pages)-len(pagesToRender), len(pages), 0.3)
 
 	// Buffer size for backpressure: 2x workers to allow pipeline overlap
 	// This prevents unbounded memory growth for large documents
 	bufferSize := effectiveWorkers * 2
-	if bufferSize > len(pages) {
-		bufferSize = len(pages)
+	if bufferSize > len(pagesToRender) {
+		bufferSize = len(pagesToRender)
 	}
 
 	// Channels for rendered pages (bounded for backpressure)
@@ -378,9 +417,13 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 
 	errCh := make(chan error, 2)
 
+	// Context for cancellation
+	// renderCtx, cancel := context.WithCancel(ctx)
+	// defer cancel() -> actually we use main ctx
+
 	go func() {
 		defer wgRender.Done()
-		if err := doc1.RenderPagesStream(ctx, pages, opts, out1); err != nil {
+		if err := doc1.RenderPagesStream(ctx, pagesToRender, opts, out1); err != nil {
 			errCh <- fmt.Errorf("doc1 render failed: %w", err)
 		}
 		close(out1)
@@ -388,14 +431,27 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 
 	go func() {
 		defer wgRender.Done()
-		if err := doc2.RenderPagesStream(ctx, pages, opts, out2); err != nil {
+		if err := doc2.RenderPagesStream(ctx, pagesToRender, opts, out2); err != nil {
 			errCh <- fmt.Errorf("doc2 render failed: %w", err)
 		}
 		close(out2)
 	}()
 
 	// Pairing and Hashing Pipeline
-	// We need to match pages by their index in the 'pages' slice.
+	// We need to match pages by their index in the 'pagesToRender' logic.
+	// Since 'RenderPagesStream' returns the index from the input slice,
+	// we need to map that back to the original 'results' index.
+	
+	// Create a map from [index in pagesToRender] -> [index in original pages]
+	renderIndexMap := make(map[int]int, len(pagesToRender))
+	filteredIdx := 0
+	for originalIdx := range pages {
+		if !textMatches[originalIdx] {
+			renderIndexMap[filteredIdx] = originalIdx
+			filteredIdx++
+		}
+	}
+
 	type pair struct {
 		img1 image.Image
 		img2 image.Image
@@ -461,14 +517,16 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 		wgHash.Add(1)
 		go func() {
 			defer wgHash.Done()
-			for idx := range hashJobs {
+			for jobIdx := range hashJobs {
 				pairsMu.Lock()
-				p := pairs[idx]
+				p := pairs[jobIdx]
 				img1, img2 := p.img1, p.img2
-				delete(pairs, idx)
+				delete(pairs, jobIdx)
 				pairsMu.Unlock()
 
-				pageNum := pages[idx]
+				// Map back to original index in 'results'
+				originalIdx := renderIndexMap[jobIdx]
+				pageNum := pages[originalIdx]
 				var dHash1, dHash2, pHash1, pHash2 uint64
 				var dDist, pDist int
 				var similarity float64
@@ -526,7 +584,7 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 					}
 				}
 
-				results[idx] = PageResult{
+				results[originalIdx] = PageResult{
 					Page:          pageNum + 1,
 					Similarity:    similarity,
 					DHashDistance: dDist,
@@ -537,7 +595,8 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 					PHash2:        pHash2,
 					IsDifferent:   similarity < c.opts.SimilarityThreshold,
 				}
-				processedChan <- idx
+				// We notify processedChan with the job index to match the waiter logic
+				processedChan <- jobIdx
 			}
 		}()
 	}
@@ -550,7 +609,8 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 
 	// Wait for rendering to complete, collecting stream-level errors
 	var renderErrors []error
-	count := 0
+	// Initialize count with number of pages we already "processed" via text match
+	count := len(textMatches) 
 	for count < len(pages) {
 		select {
 		case err := <-errCh:

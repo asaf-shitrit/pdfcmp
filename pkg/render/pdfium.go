@@ -12,6 +12,8 @@ import (
 	"github.com/klippa-app/go-pdfium/requests"
 	"github.com/klippa-app/go-pdfium/responses"
 	"github.com/klippa-app/go-pdfium/webassembly"
+
+	"github.com/asafshitrit/pdfcmp/pkg/bytewise"
 )
 
 // pdfiumRenderer implements Renderer using PDFium WebAssembly
@@ -148,16 +150,63 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 		Document: d.doc.Document,
 		Index:    pageNum,
 	})
-	if err != nil {
-		return PageInfo{}, fmt.Errorf("failed to get page size: %w", err)
+	// Get object count
+	objCountResp, err := d.instance.FPDFPage_CountObjects(&requests.FPDFPage_CountObjects{
+		Page: requests.Page{
+			ByIndex: &requests.PageByIndex{
+				Document: d.doc.Document,
+				Index:    pageNum,
+			},
+		},
+	})
+	objectCount := 0
+	if err == nil {
+		objectCount = objCountResp.Count
+	}
+
+	// Get text count and hash
+	textChars := 0
+	var textHash uint64
+	textPageResp, err := d.instance.FPDFText_LoadPage(&requests.FPDFText_LoadPage{
+		Page: requests.Page{
+			ByIndex: &requests.PageByIndex{
+				Document: d.doc.Document,
+				Index:    pageNum,
+			},
+		},
+	})
+	if err == nil {
+		charCountResp, err := d.instance.FPDFText_CountChars(&requests.FPDFText_CountChars{
+			TextPage: textPageResp.TextPage,
+		})
+		if err == nil {
+			textChars = charCountResp.Count
+			// If there's text, get it and hash it
+			if textChars > 0 {
+				textResp, err := d.instance.FPDFText_GetText(&requests.FPDFText_GetText{
+					TextPage:   textPageResp.TextPage,
+					StartIndex: 0,
+					Count:      textChars,
+				})
+				if err == nil && textResp.Text != "" {
+					textHash = bytewise.HashBytes([]byte(textResp.Text))
+				}
+			}
+		}
+		d.instance.FPDFText_ClosePage(&requests.FPDFText_ClosePage{
+			TextPage: textPageResp.TextPage,
+		})
 	}
 
 	return PageInfo{
-		Number:    pageNum,
-		WidthPts:  sizeResp.Width,
-		HeightPts: sizeResp.Height,
-		WidthPx:   int(sizeResp.Width * float64(DPIStandard) / 72.0),
-		HeightPx:  int(sizeResp.Height * float64(DPIStandard) / 72.0),
+		Number:      pageNum,
+		WidthPts:    sizeResp.Width,
+		HeightPts:   sizeResp.Height,
+		WidthPx:     int(sizeResp.Width * float64(DPIStandard) / 72.0),
+		HeightPx:    int(sizeResp.Height * float64(DPIStandard) / 72.0),
+		TextChars:   textChars,
+		ObjectCount: objectCount,
+		TextHash:    textHash,
 	}, nil
 }
 

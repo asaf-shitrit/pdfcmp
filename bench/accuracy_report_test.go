@@ -130,15 +130,18 @@ func shiftImage(img image.Image, dx, dy int) image.Image {
 }
 
 func addNoise(img image.Image, factor float64) image.Image {
+	// Use a fixed seed for reproducible noise in benchmarks
+	r := rand.New(rand.NewSource(42))
+	
 	b := img.Bounds()
 	newImg := image.NewRGBA(b)
 	draw.Draw(newImg, b, img, b.Min, draw.Src)
 	
 	limit := int(float64(b.Dx()*b.Dy()) * factor)
 	for i := 0; i < limit; i++ {
-		x := rand.Intn(b.Dx())
-		y := rand.Intn(b.Dy())
-		newImg.Set(x, y, color.RGBA{uint8(rand.Intn(255)), uint8(rand.Intn(255)), uint8(rand.Intn(255)), 255})
+		x := r.Intn(b.Dx())
+		y := r.Intn(b.Dy())
+		newImg.Set(x, y, color.RGBA{uint8(r.Intn(255)), uint8(r.Intn(255)), uint8(r.Intn(255)), 255})
 	}
 	return newImg
 }
