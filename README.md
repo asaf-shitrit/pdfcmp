@@ -7,13 +7,17 @@
 
 ## How it works
 
-The tool follows a layered approach to avoid heavy rendering whenever possible:
+The tool follows a layered approach to avoid heavy rendering whenever possible. It includes new **Smart Heuristics** to speed up decision making:
 
 1.  **Metadata**: Checks page counts and basic file attributes.
-2.  **Byte-wise**: Runs an xxHash64 check to catch identical files instantly (~9 GB/s).
-3.  **Visual Thumbnails**: Renders the first and last pages at low resolution to detect obvious mismatches.
-4.  **Strategic Sampling**: For long documents, it analyzes a subset of pages ($\sqrt{n} + 2$) to estimate similarity without scanning the whole file.
-5.  **Full Analysis**: If needed, it performs a complete page-by-page comparison using perceptual hashing (dHash and pHash).
+2.  **Structural Check**: Compares text character counts and graphical object counts per page to detect layout changes without rendering.
+3.  **Byte-wise**: Runs an xxHash64 check to catch identical files instantly (~9 GB/s).
+4.  **Visual Thumbnails**:
+    *   **Histogram Pre-check**: Calculates RGB histograms to reject major color differences instantly (2x faster than hashing).
+    *   **Low-Res Render**: Renders first and last pages at 72 DPI for perceptual analysis.
+5.  **Text Fingerprinting**: Extracts text and compares its hash. Identical text content with similar layout boosts confidence significantly.
+6.  **Strategic Sampling**: For long documents, it analyzes a subset of pages ($\sqrt{n} + 2$) to estimate similarity.
+7.  **Full Analysis**: If needed, it performs a complete page-by-page comparison using perceptual hashing (dHash and pHash).
 
 Rendering is powered by **PDFium** via WebAssembly, and the analysis is fully concurrent to make the most of multi-core CPUs.
 
@@ -74,11 +78,12 @@ func main() {
 
 Benchmarks run on an Apple M2 Pro:
 
-| Scenario | Mode | Execution Time |
-| :--- | :--- | :--- |
-| **Identical Docs** | Bytewise | ~1.5ms |
-| **10-page PDF** | Visual | ~240ms |
-| **100-page PDF** | Visual | ~1.6s (~62 pgs/sec) |
+| Scenario | Mode | Execution Time | Speed |
+| :--- | :--- | :--- | :--- |
+| **Identical Docs** | Bytewise | ~1.5ms | > 8 GB/s |
+| **Color Check** | Histogram | ~0.7ms | **2x faster than dHash** |
+| **10-page PDF** | Visual | ~240ms | 41 pages/sec |
+| **100-page PDF** | Visual | ~1.6s | **62 pages/sec** |
 
 ## Development
 
