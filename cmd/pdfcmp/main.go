@@ -32,16 +32,10 @@ var (
 func main() {
 	rootCmd := &cobra.Command{
 		Use:   "pdfcmp",
-		Short: "Compare PDF files byte-wise and visually",
-		Long: `A high-performance PDF comparison tool that uses perceptual hashing
-(dHash and pHash) to detect visual similarities between PDF documents.
-
-Features:
-  - Multi-layer comparison pipeline for optimal performance
-  - Byte-wise comparison with xxHash64
-  - Visual comparison with dHash and pHash
-  - Strategic page sampling for large documents
-  - Concurrent page processing`,
+		Short: "Lightning-fast PDF comparison engine with visual perception",
+		Long: `pdfcmp is a high-performance comparison tool and library that uses a
+multi-stage pipeline (byte-wise, structural, and visual) to detect
+identical or similar PDF documents with extreme speed.`,
 	}
 
 	// Global flags

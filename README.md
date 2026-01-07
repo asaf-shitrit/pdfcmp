@@ -1,6 +1,6 @@
 # pdfcmp
 
-`pdfcmp` is a high-performance tool and Go library for comparing PDF files. It uses a multi-stage pipeline to detect whether two documents are byte-identical or visually similar, optimizing for speed by failing as early as possible.
+`pdfcmp` is a lightning-fast PDF comparison engine and Go library. It utilizes a layered pipeline—combining byte-level hashing, structural analysis, and perceptual visual comparison—to detect document similarities with maximum efficiency and accuracy.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/asafshitrit/pdfcmp.svg)](https://pkg.go.dev/github.com/asafshitrit/pdfcmp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
