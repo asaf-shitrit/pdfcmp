@@ -4,7 +4,7 @@ Comparing two PDF files sounds simple. In a perfect world, a byte-level hash
 would tell you everything you need to know. But we don't live in a perfect
 world. We live in a world where two documents can look identical to a human but
 have different metadata, or where a single-pixel shift in a logo makes two
-otherwise identical forms technically "different."
+otherwise identical forms technically “different.”
 
 I recently found myself needing a way to compare PDFs that was fast enough for
 CI/CD pipelines and accurate enough to catch visual regressions. Existing tools
@@ -13,7 +13,7 @@ missing subtle but important changes.
 
 This is why I built `pdfcmp`.
 
-## The "Early Exit" Architecture
+## The “Early Exit” Architecture
 
 When I started this project, I realized that rendering dominates the cost of
 comparison. For example, rendering a single page at 300 DPI is about 11 times
@@ -26,7 +26,7 @@ I landed on a five-stage “Early Exit” pipeline:
 2. **Structural Heuristics**: I added a middle layer that counts characters and
    graphical objects. If the first page of document A has 10,000 characters and
    document B has 10,001, we don't need to render to know they've changed.
-3. **Histogram Pre-filter**: This was a major "aha!" moment. Calculating an RGB
+3. **Histogram Pre-filter**: This was a major “aha!” moment. Calculating an RGB
    histogram is 2x faster than perceptual hashing. If the color balance of a
    page is fundamentally different, we reject it instantly.
 4. **Strategic Sampling**: We don't need to check all 100 pages of a report to
@@ -44,10 +44,10 @@ fooled by digital noise or minor color variations.
 pHash solves this by using the **Discrete Cosine Transform (DCT)**—the same
 mathematical foundation behind JPEG compression. Here’s the workflow:
 
-1. Reduce the image to a 32x32 grayscale matrix.
+1. Reduce the image to a 32×32 grayscale matrix.
 2. Execute a 2D DCT to convert the pixels into frequency space.
-3. Extract the top-left 8x8 block, which represents the lowest frequencies (the
-   "gist" of the image).
+3. Extract the top-left 8×8 block, which represents the lowest frequencies (the
+   “gist” of the image).
 4. Throw away the DC component (the average brightness) and calculate a median
    bit-mask from the remaining AC frequencies.
 
@@ -103,7 +103,7 @@ while reducing the I/O and rendering load.
 
 ## The Hidden Savings: Histogram vs. Hash
 
-We also looked at the "micro-costs" of the visual pipeline. Even after we've
+We also looked at the “micro-costs” of the visual pipeline. Even after we've
 decided to render a page, there's a choice: do we go straight to a perceptual
 hash, or do we do a cheaper pre-check?
 
@@ -118,6 +118,35 @@ only requires a single pass over the pixel data without any complex transforms
 
 By running the Histogram check first, we can reject 80% of visually different
 documents before the more expensive pHash logic even touches the CPU.
+
+## Competitive Edge: Stacking Up Against the Giants
+
+I didn't stop at internal metrics. I benchmarked `pdfcmp` against established
+industry standards like `diff-pdf` (C++) and a naive ImageMagick-based baseline.
+
+The results highlight where the “Early Exit” architecture truly shines:
+
+| Scenario | pdfcmp (Total) | pdfcmp (Logic) | diff-pdf | Naive IM |
+| :--- | :---: | :---: | :---: | :---: |
+| **Identical (Small)** | 1.2s | **0ms** | 189ms | 759ms |
+| **Visual Diff (40pg)** | 2.1s | **723ms** | 113ms | 2595ms |
+| **Large Doc (100pg)** | **1.0s** | **47ms** | 89ms* | 6227ms |
+
+*\*Note: `diff-pdf` often exits early as soon as it finds a single differing
+pixel. While fast, it doesn't give you a similarity score or a full report
+unless forced, which can take significantly longer (up to 2.4s for the 100pg
+doc).*
+
+### Why `pdfcmp` Wins in CI/CD
+
+While `diff-pdf` is a fantastic native tool for binary “yes/no” answers,
+`pdfcmp` offers two critical advantages for automated pipelines:
+
+1. **Perceptual Resilience**: `pdfcmp` ignores Gaussian noise and minor
+   rendering artifacts that would trigger a “fail” in pixel-perfect tools.
+2. **Predictable Scaling**: Thanks to **Strategic Sampling**, `pdfcmp` can
+   validate a 1,000-page document in nearly the same time it takes to validate
+   a 10-page document, provided the similarity holds.
 
 ## Real-world Applications
 
@@ -154,12 +183,11 @@ just what the Go code was doing, but exactly how long we were waiting on PDFium
 to return a rendered bitmap. This insight led to the decision to default to
 72 DPI for the initial pipeline stages, as the Off-CPU wait time dropped by 80%.
 
-
 ## Closing Thoughts & Future Work
 
 Building `pdfcmp` was about understanding the trade-offs between bits and
 pixels. Looking forward, I'm exploring the use of Vector Embeddings and CLIP
-models for "semantic" similarity—knowing that two documents are about the same
+models for “semantic” similarity—knowing that two documents are about the same
 thing even if their visual layout is different.
 
 You can find the source code, the benchmark suite, and the CLI on GitHub:
