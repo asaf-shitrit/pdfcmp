@@ -2,59 +2,74 @@ package compare
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"testing"
 )
 
-// TestComparisonProperties verifies fundamental properties of the comparison logic:
-// 1. Identity: Compare(A, A) should be 100% similarity.
-// 2. Symmetry: Compare(A, B) should equal Compare(B, A).
-func TestComparisonProperties(t *testing.T) {
-	fixturesDir := "../../bench/fixtures"
-	pdfA := filepath.Join(fixturesDir, "small_a.pdf")
-	pdfB := filepath.Join(fixturesDir, "small_b.pdf")
+// TestProperties checks for identity and symmetry in PDF comparison.
+func TestProperties(t *testing.T) {
+	// Find some fixtures to test with
+	fixtures := []string{
+		"small_a.pdf",
+		"medium_a.pdf",
+		"graphic_a.pdf",
+	}
 
-	// Use a small set of fixtures. Check if they exist.
-	// In a real environment, we'd ensure these are generated.
-	// For this test, if they don't exist, we skip.
-	
 	ctx := context.Background()
-	cmp, err := New(WithMode(ModeVisual), WithSampling(SamplingAll))
+	comparer, err := New(WithWorkers(4))
 	if err != nil {
 		t.Fatalf("Failed to create comparer: %v", err)
 	}
-	defer cmp.Close()
+	defer comparer.Close()
 
-	// 1. Identity
-	t.Run("Identity", func(t *testing.T) {
-		res, err := cmp.Compare(ctx, pdfA, pdfA)
-		if err != nil {
-			t.Fatalf("Identity compare failed: %v", err)
+	for _, f := range fixtures {
+		path := filepath.Join("../../bench/fixtures", f)
+		if _, err := os.Stat(path); err != nil {
+			t.Logf("Skipping fixture %s: %v", f, err)
+			continue
 		}
-		if res.SimilarityScore < 0.999 {
-			t.Errorf("Identity similarity too low: %f", res.SimilarityScore)
-		}
-	})
 
-	// 2. Symmetry
+		t.Run("Identity_"+f, func(t *testing.T) {
+			res, err := comparer.Compare(ctx, path, path)
+			if err != nil {
+				t.Errorf("Compare failed: %v", err)
+				return
+			}
+			if !res.Identical {
+				t.Errorf("Identity failed for %s: expected identical, got similarity %f", f, res.SimilarityScore)
+			}
+			if res.SimilarityScore < 0.999 {
+				t.Errorf("Similarity score too low for identity: %f", res.SimilarityScore)
+			}
+		})
+	}
+
+	// Symmetry test
 	t.Run("Symmetry", func(t *testing.T) {
-		resAB, err := cmp.Compare(ctx, pdfA, pdfB)
-		if err != nil {
-			t.Fatalf("Compare(A, B) failed: %v", err)
+		f1 := filepath.Join("../../bench/fixtures", "small_a.pdf")
+		f2 := filepath.Join("../../bench/fixtures", "medium_a.pdf")
+
+		if _, err := os.Stat(f1); err != nil {
+			return
+		}
+		if _, err := os.Stat(f2); err != nil {
+			return
 		}
 
-		resBA, err := cmp.Compare(ctx, pdfB, pdfA)
+		res12, err := comparer.Compare(ctx, f1, f2)
 		if err != nil {
-			t.Fatalf("Compare(B, A) failed: %v", err)
+			t.Fatalf("Compare A->B failed: %v", err)
+		}
+		res21, err := comparer.Compare(ctx, f2, f1)
+		if err != nil {
+			t.Fatalf("Compare B->A failed: %v", err)
 		}
 
-		// Tolerance for floating point
-		diff := resAB.SimilarityScore - resBA.SimilarityScore
-		if diff < 0 {
-			diff = -diff
-		}
-		if diff > 0.0001 {
-			t.Errorf("Symmetry violated: A->B=%f, B->A=%f", resAB.SimilarityScore, resBA.SimilarityScore)
+		// Use a small epsilon for floating point comparison if necessary, 
+		// but since it's the same math it should be identical or very close.
+		if res12.SimilarityScore != res21.SimilarityScore {
+			t.Errorf("Symmetry failed: A->B=%f, B->A=%f", res12.SimilarityScore, res21.SimilarityScore)
 		}
 	})
 }

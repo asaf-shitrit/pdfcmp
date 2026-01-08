@@ -1,0 +1,16 @@
+{
+  "rules": {
+    "common-misspellings": true,
+    "rousseau": {
+      "showContext": 10,
+      "ignore": []
+    },
+    "write-good": {
+      "severity": "warning"
+    },
+    "no-dead-link": {
+        "checkRelative": true,
+        "basePath": "./"
+    }
+  }
+}

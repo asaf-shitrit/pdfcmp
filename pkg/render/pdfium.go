@@ -109,7 +109,7 @@ func (r *pdfiumRenderer) OpenWithPassword(path string, password string) (Documen
 
 	doc, err := instance.OpenDocument(req)
 	if err != nil {
-		instance.Close()
+		_ = instance.Close()
 		return nil, fmt.Errorf("failed to open PDF %s: %w", path, err)
 	}
 
@@ -118,8 +118,8 @@ func (r *pdfiumRenderer) OpenWithPassword(path string, password string) (Documen
 		Document: doc.Document,
 	})
 	if err != nil {
-		instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
-		instance.Close()
+		_, _ = instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+		_ = instance.Close()
 		return nil, fmt.Errorf("failed to get page count: %w", err)
 	}
 
@@ -150,6 +150,10 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 		Document: d.doc.Document,
 		Index:    pageNum,
 	})
+	if err != nil {
+		return PageInfo{}, fmt.Errorf("failed to get page size: %w", err)
+	}
+
 	// Get object count
 	objCountResp, err := d.instance.FPDFPage_CountObjects(&requests.FPDFPage_CountObjects{
 		Page: requests.Page{
@@ -193,7 +197,7 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 				}
 			}
 		}
-		d.instance.FPDFText_ClosePage(&requests.FPDFText_ClosePage{
+		_, _ = d.instance.FPDFText_ClosePage(&requests.FPDFText_ClosePage{
 			TextPage: textPageResp.TextPage,
 		})
 	}

@@ -158,13 +158,13 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", pdf1, err)
 	}
-	defer doc1.Close()
+	defer func() { _ = doc1.Close() }()
 
 	doc2, err := c.renderer.Open(pdf2)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open %s: %w", pdf2, err)
 	}
-	defer doc2.Close()
+	defer func() { _ = doc2.Close() }()
 
 	result.Metadata.Pages1 = doc1.PageCount()
 	result.Metadata.Pages2 = doc2.PageCount()

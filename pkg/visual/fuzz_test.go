@@ -77,3 +77,50 @@ func FuzzDHash(f *testing.F) {
 		_ = DHash(img)
 	})
 }
+
+func FuzzPHash(f *testing.F) {
+	img := image.NewRGBA(image.Rect(0, 0, 32, 32))
+	f.Add(32, 32, []byte(img.Pix))
+
+	f.Fuzz(func(t *testing.T, w, h int, pix []byte) {
+		if w <= 0 || h <= 0 || w > 128 || h > 128 {
+			return
+		}
+		if len(pix) < w*h*4 {
+			return
+		}
+		
+		img := &image.RGBA{
+			Pix:    pix[:w*h*4],
+			Stride: w * 4,
+			Rect:   image.Rect(0, 0, w, h),
+		}
+		
+		// Ensure it doesn't panic
+		_ = PHash(img)
+	})
+}
+
+func FuzzHistogram(f *testing.F) {
+	img := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	f.Add(16, 16, []byte(img.Pix))
+
+	f.Fuzz(func(t *testing.T, w, h int, pix []byte) {
+		if w <= 0 || h <= 0 || w > 256 || h > 256 {
+			return
+		}
+		if len(pix) < w*h*4 {
+			return
+		}
+		
+		img := &image.RGBA{
+			Pix:    pix[:w*h*4],
+			Stride: w * 4,
+			Rect:   image.Rect(0, 0, w, h),
+		}
+		
+		// Ensure it doesn't panic
+		_ = ComputeHistogram(img)
+	})
+}
+
