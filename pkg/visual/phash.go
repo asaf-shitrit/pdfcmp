@@ -53,7 +53,7 @@ func PHash(img image.Image) uint64 {
 	// Use a flat slice for the 32x32 matrix to avoid 33+ allocations
 	// 32*32 = 1024 floats.
 	pixels := make([]float64, pHashInputSize*pHashInputSize)
-	
+
 	for y := 0; y < pHashInputSize; y++ {
 		offset := y * pHashInputSize
 		for x := 0; x < pHashInputSize; x++ {
@@ -103,25 +103,25 @@ func PHash(img image.Image) uint64 {
 // This version allocates significantly less memory than the slice-of-slices version.
 func dct2DFlat(input, output []float64) {
 	size := pHashInputSize
-	
+
 	// Temporary buffer for transpose/intermediate results
-	// We can reuse 'output' as intermediate storage for row DCTs, 
+	// We can reuse 'output' as intermediate storage for row DCTs,
 	// but we need a separate buffer for column processing to avoid overwriting.
 	// Actually, we can do Row DCT -> Output, then Col DCT on Output.
-	
+
 	// 1. DCT on Rows
 	// For each row y, read from input, write to output
 	rowBuf := make([]float64, size) // Reusable line buffer
 	outBuf := make([]float64, size)
-	
+
 	for y := 0; y < size; y++ {
 		rowOffset := y * size
 		// Copy row
 		copy(rowBuf, input[rowOffset:rowOffset+size])
-		
+
 		// DCT 1D
 		dct1D(rowBuf, outBuf)
-		
+
 		// Write back to output
 		copy(output[rowOffset:rowOffset+size], outBuf)
 	}
@@ -131,16 +131,16 @@ func dct2DFlat(input, output []float64) {
 	// Since write-back affects future reads of the same col (not really, but accessing cols is tricky),
 	// we'll process one column at a time.
 	colBuf := make([]float64, size)
-	
+
 	for x := 0; x < size; x++ {
 		// Extract column from 'output' (which currently holds Row-DCT result)
 		for y := 0; y < size; y++ {
 			colBuf[y] = output[y*size+x]
 		}
-		
+
 		// DCT 1D
 		dct1D(colBuf, outBuf)
-		
+
 		// Write back
 		for y := 0; y < size; y++ {
 			output[y*size+x] = outBuf[y]
@@ -168,9 +168,10 @@ func dct1D(in, out []float64) {
 	}
 }
 
-// PHashFast computes pHash using a faster but slightly less accurate approach.
-// Uses only the first 8x8 pixels of a 32x32 resize instead of full DCT.
-// Suitable for quick preliminary comparisons.
+// PHashFast computes an average hash (aHash), not a perceptual hash: it
+// resizes the image straight to 8x8 and sets a bit for each pixel brighter
+// than the mean. There is no DCT, so it is faster than PHash and less
+// tolerant of noise and gradients.
 func PHashFast(img image.Image) uint64 {
 	// Resize to 8x8 directly
 	resized := resize.Resize(pHashDCTSize, pHashDCTSize, img, resize.Bilinear)
@@ -207,8 +208,6 @@ func ComputePHashPair(img1, img2 image.Image) (uint64, uint64, int) {
 }
 
 // ComputeBothHashes computes both dHash and pHash for an image.
-// This is slightly more efficient than calling them separately
-// as we can share the grayscale conversion.
 func ComputeBothHashes(img image.Image) (dHash, pHash uint64) {
 	dHash = DHash(img)
 	pHash = PHash(img)
