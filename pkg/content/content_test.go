@@ -137,4 +137,11 @@ func TestSimilarityNeedsEnoughShingles(t *testing.T) {
 	if _, ok := Similarity(repeated, repeated+" more"); ok {
 		t.Error("100 repeats of one phrase: want no estimate, it has few distinct shingles")
 	}
+
+	// A long page replaced by a short notice: one side is long enough, and
+	// the low estimate is the point.
+	s, ok = Similarity(long, "THIS PAGE HAS BEEN MODIFIED FOR TESTING")
+	if !ok || s > 0.1 {
+		t.Errorf("long page against a short notice: got %v, %v; want an estimate near 0", s, ok)
+	}
 }
