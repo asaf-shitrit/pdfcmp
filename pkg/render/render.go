@@ -34,6 +34,7 @@ type PageInfo struct {
 	TextChars   int     // Number of text characters on page
 	ObjectCount int     // Number of graphical objects on page
 	TextHash    uint64  // Hash of text content (if available)
+	Text        string  // Extracted text content (empty if none)
 }
 
 // RenderedPage contains a rendered image and its index

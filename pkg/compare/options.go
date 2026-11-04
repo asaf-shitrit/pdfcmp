@@ -49,6 +49,18 @@ const (
 	HashPHash
 )
 
+// TextHashType specifies how the text of two pages is compared when it differs
+type TextHashType int
+
+const (
+	// TextMinHash estimates the Jaccard similarity of the pages' word
+	// shingles from 128-slot MinHash signatures (default)
+	TextMinHash TextHashType = iota
+	// TextHashOff compares page text by exact hash only: a text change
+	// costs a page 5% of its visual similarity, however much text changed
+	TextHashOff
+)
+
 // SamplingStrategy specifies how pages are sampled for comparison
 type SamplingStrategy int
 
@@ -70,6 +82,9 @@ type Options struct {
 
 	// HashType specifies which hash algorithms to use for visual comparison
 	HashType HashType
+
+	// TextHash specifies how differing page text is scored
+	TextHash TextHashType
 
 	// DPI for rendering pages (default: 150)
 	DPI int
@@ -106,6 +121,7 @@ func DefaultOptions() Options {
 	return Options{
 		Mode:                ModeAuto,
 		HashType:            HashBoth,
+		TextHash:            TextMinHash,
 		DPI:                 render.DPIStandard,
 		Workers:             runtime.NumCPU(),
 		SimilarityThreshold: DefaultSimilarityThreshold,
@@ -129,6 +145,13 @@ func WithMode(mode Mode) Option {
 func WithHashType(ht HashType) Option {
 	return func(o *Options) {
 		o.HashType = ht
+	}
+}
+
+// WithTextHash sets how differing page text is scored
+func WithTextHash(t TextHashType) Option {
+	return func(o *Options) {
+		o.TextHash = t
 	}
 }
 
@@ -203,6 +226,10 @@ func (o *Options) Validate() error {
 
 	if o.SimilarityThreshold < 0.0 || o.SimilarityThreshold > 1.0 {
 		errs = append(errs, fmt.Errorf("similarity threshold must be between 0.0 and 1.0, got %f", o.SimilarityThreshold))
+	}
+
+	if o.TextHash < TextMinHash || o.TextHash > TextHashOff {
+		errs = append(errs, fmt.Errorf("unknown text hash type %d", o.TextHash))
 	}
 
 	if o.MaxMemoryMB <= 0 {

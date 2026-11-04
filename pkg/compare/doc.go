@@ -47,4 +47,17 @@
 //   - pHash (perceptual hash): More robust, uses DCT for better tolerance
 //
 // Both hashes produce 64-bit values compared using Hamming distance.
+//
+// # Text Similarity
+//
+// Perceptual hashes record where text sits on a page, not what it says. When
+// both pages have text and it differs, a MinHash signature of its word
+// shingles estimates how much the pages share, and the page's similarity is
+// the lower of its visual and text scores (see package content). Turn it off
+// with WithTextHash(TextHashOff).
+//
+// # Scoring
+//
+// Result.SimilarityScore is the lowest page similarity: one changed page
+// makes the documents different, however many pages surround it.
 package compare
