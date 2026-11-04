@@ -7,9 +7,9 @@ import (
 
 // HistogramResult contains basic color distribution info
 type HistogramResult struct {
-	AverageR float64
-	AverageG float64
-	AverageB float64
+	AverageR  float64
+	AverageG  float64
+	AverageB  float64
 	Luminance float64
 }
 
@@ -18,9 +18,9 @@ type HistogramResult struct {
 // if the images are obviously different in color distribution.
 func ComputeHistogram(img image.Image) HistogramResult {
 	bounds := img.Bounds()
-	
+
 	var rSum, gSum, bSum uint64
-	
+
 	// Sample pixels to save time (every 4th pixel)
 	count := 0
 	for y := bounds.Min.Y; y < bounds.Max.Y; y += 4 {
@@ -33,18 +33,18 @@ func ComputeHistogram(img image.Image) HistogramResult {
 			count++
 		}
 	}
-	
+
 	if count == 0 {
 		return HistogramResult{}
 	}
-	
+
 	avgR := float64(rSum) / float64(count)
 	avgG := float64(gSum) / float64(count)
 	avgB := float64(bSum) / float64(count)
-	
+
 	// Simple relative luminance formula
 	lum := 0.299*avgR + 0.587*avgG + 0.114*avgB
-	
+
 	return HistogramResult{
 		AverageR:  avgR,
 		AverageG:  avgG,
@@ -59,10 +59,10 @@ func HistogramSimilarity(h1, h2 HistogramResult) float64 {
 	dr := h1.AverageR - h2.AverageR
 	dg := h1.AverageG - h2.AverageG
 	db := h1.AverageB - h2.AverageB
-	
+
 	dist := math.Sqrt(dr*dr + dg*dg + db*db)
 	maxDist := 441.67
-	
+
 	similarity := 1.0 - (dist / maxDist)
 	if similarity < 0 {
 		return 0
