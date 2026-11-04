@@ -2,16 +2,16 @@ package render
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
+
+	"github.com/asafshitrit/pdfcmp/internal/fixtures"
 )
 
 func TestPdfiumIntegration(t *testing.T) {
-	// Search for a fixture to test with
-	fixturePath := filepath.Join("../../bench/fixtures", "small_a.pdf")
-	if _, err := os.Stat(fixturePath); err != nil {
-		t.Skipf("Fixture not found at %s, skipping integration test", fixturePath)
+	spec, _ := fixtures.Find("small_a.pdf")
+	fixturePath, err := spec.Write(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
 
 	renderer, err := NewPdfiumRenderer()
@@ -31,6 +31,25 @@ func TestPdfiumIntegration(t *testing.T) {
 
 		if doc.PageCount() <= 0 {
 			t.Errorf("Expected positive page count, got %d", doc.PageCount())
+		}
+	})
+
+	t.Run("RenderPages", func(t *testing.T) {
+		doc, err := renderer.Open(fixturePath)
+		if err != nil {
+			t.Fatalf("Failed to open PDF: %v", err)
+		}
+		defer doc.Close()
+
+		imgs, err := doc.RenderPages(ctx, []int{0, doc.PageCount() - 1}, Options{DPI: DPIThumbnail})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(imgs) != 2 || imgs[0] == nil || imgs[1] == nil {
+			t.Fatalf("got %d images, want 2 rendered pages", len(imgs))
+		}
+		if _, err := doc.RenderPages(ctx, []int{doc.PageCount()}, Options{}); err == nil {
+			t.Error("rendering past the last page: want an error")
 		}
 	})
 
