@@ -140,8 +140,11 @@ func TestSimilarityNeedsEnoughShingles(t *testing.T) {
 
 	// A long page replaced by a short notice: one side is long enough, and
 	// the low estimate is the point.
-	s, ok = Similarity(long, "THIS PAGE HAS BEEN MODIFIED FOR TESTING")
-	if !ok || s > 0.1 {
-		t.Errorf("long page against a short notice: got %v, %v; want an estimate near 0", s, ok)
+	const notice = "THIS PAGE HAS BEEN MODIFIED FOR TESTING"
+	for _, pair := range [][2]string{{long, notice}, {notice, long}} {
+		s, ok = Similarity(pair[0], pair[1])
+		if !ok || s > 0.1 {
+			t.Errorf("Similarity(%.20q, %.20q) = %v, %v; want an estimate near 0", pair[0], pair[1], s, ok)
+		}
 	}
 }
