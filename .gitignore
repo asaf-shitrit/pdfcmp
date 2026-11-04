@@ -39,3 +39,4 @@ Thumbs.db
 
 # Dependency Directories
 vendor/
+coverage/

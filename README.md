@@ -176,6 +176,7 @@ Benchmarks include diverse PDF types to ensure robustness:
 - **Tests**: `make test`. Tests write the PDFs they need from `internal/fixtures`.
 - **Benchmarks**: `make fixtures`, then `make bench`.
 - **Linting**: `make lint`
+- **CRAP gate**: `make crap` fails when a function's CRAP score (complexity² × (1 − coverage)³ + complexity) is above 30. `make hooks` runs it before every commit.
 
 `go test -race` reports a data race inside wazero when two documents render at once ([wazero/wazero#2520](https://github.com/wazero/wazero/issues/2520)): instances that share a compiled module memoize function-type keys without synchronization.
 

@@ -123,3 +123,11 @@ help:
 	@echo "  clean       - Clean build artifacts"
 	@echo "  coverage    - Generate coverage report"
 	@echo "  dev         - Format, test, and build"
+
+.PHONY: crap hooks
+crap:
+	go test -coverpkg=./... -coverprofile=coverage.out ./...
+	go run ./scripts/crap
+
+hooks:
+	git config core.hooksPath .githooks
