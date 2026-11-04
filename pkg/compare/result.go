@@ -11,7 +11,9 @@ type Result struct {
 	// Identical is true if PDFs are byte-for-byte identical
 	Identical bool `json:"identical"`
 
-	// SimilarityScore is the overall visual similarity (0.0 to 1.0)
+	// SimilarityScore is the similarity of the least similar compared page
+	// (0.0 to 1.0). One changed page makes the document different, however
+	// many unchanged pages surround it.
 	SimilarityScore float64 `json:"similarity_score"`
 
 	// ByteComparison contains byte-wise comparison results
@@ -56,7 +58,8 @@ type ByteResult struct {
 
 // VisualResult contains visual comparison results
 type VisualResult struct {
-	// OverallScore is the average similarity across all compared pages
+	// OverallScore is the average similarity across all compared pages.
+	// It dilutes a single changed page; SimilarityScore does not.
 	OverallScore float64 `json:"overall_score"`
 
 	// HashType indicates which hash algorithm(s) were used
@@ -77,8 +80,13 @@ type PageResult struct {
 	// Page is the 1-indexed page number
 	Page int `json:"page"`
 
-	// Similarity is the visual similarity score (0.0 to 1.0)
+	// Similarity is the page's similarity score (0.0 to 1.0): the lower of
+	// its visual and text similarity when both pages have text
 	Similarity float64 `json:"similarity"`
+
+	// TextSimilarity is the estimated similarity of the two pages' text,
+	// set only when both pages have text and it differs
+	TextSimilarity *float64 `json:"text_similarity,omitempty"`
 
 	// DHashDistance is the Hamming distance for dHash
 	DHashDistance int `json:"dhash_distance"`

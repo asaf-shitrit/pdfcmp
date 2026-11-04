@@ -171,6 +171,7 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 	// Get text count and hash
 	textChars := 0
 	var textHash uint64
+	var text string
 	textPageResp, err := d.instance.FPDFText_LoadPage(&requests.FPDFText_LoadPage{
 		Page: requests.Page{
 			ByIndex: &requests.PageByIndex{
@@ -193,7 +194,8 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 					Count:      textChars,
 				})
 				if err == nil && textResp.Text != "" {
-					textHash = bytewise.HashBytes([]byte(textResp.Text))
+					text = textResp.Text
+					textHash = bytewise.HashBytes([]byte(text))
 				}
 			}
 		}
@@ -211,6 +213,7 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 		TextChars:   textChars,
 		ObjectCount: objectCount,
 		TextHash:    textHash,
+		Text:        text,
 	}, nil
 }
 
@@ -409,7 +412,6 @@ func (d *pdfiumDocument) RenderPagesStream(ctx context.Context, pageNums []int, 
 
 	return nil
 }
-
 
 func (d *pdfiumDocument) Close() error {
 	_, err := d.instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{

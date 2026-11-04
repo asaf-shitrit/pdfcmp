@@ -2,6 +2,7 @@ package compare
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
 	"math"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/asafshitrit/pdfcmp/pkg/bytewise"
+	"github.com/asafshitrit/pdfcmp/pkg/content"
 	"github.com/asafshitrit/pdfcmp/pkg/render"
 	"github.com/asafshitrit/pdfcmp/pkg/visual"
 )
@@ -77,260 +79,8 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 		},
 		ComparisonLayers: []string{},
 	}
-
-	// Check for self-comparison (comparing file to itself)
-	abs1, err1 := filepath.Abs(pdf1)
-	abs2, err2 := filepath.Abs(pdf2)
-	if err1 == nil && err2 == nil && abs1 == abs2 {
-		log.Debug("Self-comparison detected, returning identical")
-		// Same file - always identical
-		result.Identical = true
-		result.SimilarityScore = 1.0
-		result.VisualComparison = VisualResult{
-			OverallScore:     1.0,
-			SamplingStrategy: "skipped (same file)",
-		}
-		result.Duration = time.Since(start)
-		result.Metadata.DurationMS = result.Duration.Milliseconds()
-		return result, nil
-	}
-
-	// Get file info
-	stat1, err := os.Stat(pdf1)
-	if err != nil {
-		return nil, fmt.Errorf("cannot access %s: %w", pdf1, err)
-	}
-	stat2, err := os.Stat(pdf2)
-	if err != nil {
-		return nil, fmt.Errorf("cannot access %s: %w", pdf2, err)
-	}
-	result.Metadata.Size1 = stat1.Size()
-	result.Metadata.Size2 = stat2.Size()
-
-	// Layer 1: Byte-wise comparison (fastest)
-	if c.opts.Mode == ModeAuto || c.opts.Mode == ModeByte || c.opts.Mode == ModeFull {
-		result.ComparisonLayers = append(result.ComparisonLayers, "bytewise")
-		c.reportProgress("Byte comparison", 0, 1, 0.1)
-
-		byteResult, err := bytewise.Compare(pdf1, pdf2)
-		if err != nil {
-			return nil, fmt.Errorf("byte comparison failed: %w", err)
-		}
-
-		result.ByteComparison = ByteResult{
-			Identical:  byteResult.Identical,
-			Hash1:      byteResult.Hash1,
-			Hash2:      byteResult.Hash2,
-			Size1:      byteResult.Size1,
-			Size2:      byteResult.Size2,
-			SizesMatch: byteResult.SizesMatch,
-		}
-
-		log.Debug("Byte comparison complete",
-			F("identical", byteResult.Identical),
-			F("sizesMatch", byteResult.SizesMatch))
-
-		// Early exit if byte-identical
-		if byteResult.Identical {
-			log.Info("Files are byte-identical, skipping visual comparison")
-			result.Identical = true
-			result.SimilarityScore = 1.0
-			result.VisualComparison = VisualResult{
-				OverallScore:     1.0,
-				SamplingStrategy: "skipped (byte identical)",
-			}
-			result.Duration = time.Since(start)
-			result.Metadata.DurationMS = result.Duration.Milliseconds()
-			return result, nil
-		}
-
-		// If only byte comparison requested, we're done
-		if c.opts.Mode == ModeByte {
-			result.SimilarityScore = 0.0
-			result.Duration = time.Since(start)
-			result.Metadata.DurationMS = result.Duration.Milliseconds()
-			return result, nil
-		}
-	}
-
-	// Open PDFs for visual comparison
-	doc1, err := c.renderer.Open(pdf1)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open %s: %w", pdf1, err)
-	}
-	defer func() { _ = doc1.Close() }()
-
-	doc2, err := c.renderer.Open(pdf2)
-	if err != nil {
-		return nil, fmt.Errorf("failed to open %s: %w", pdf2, err)
-	}
-	defer func() { _ = doc2.Close() }()
-
-	result.Metadata.Pages1 = doc1.PageCount()
-	result.Metadata.Pages2 = doc2.PageCount()
-
-	// Handle empty PDFs (0 pages)
-	if doc1.PageCount() == 0 && doc2.PageCount() == 0 {
-		log.Debug("Both PDFs have 0 pages, treating as identical")
-		result.Identical = true
-		result.SimilarityScore = 1.0
-		result.VisualComparison = VisualResult{
-			OverallScore:     1.0,
-			SamplingStrategy: "empty documents",
-		}
-		result.Duration = time.Since(start)
-		result.Metadata.DurationMS = result.Duration.Milliseconds()
-		return result, nil
-	}
-
-	if doc1.PageCount() == 0 || doc2.PageCount() == 0 {
-		log.Debug("One PDF has 0 pages", F("pages1", doc1.PageCount()), F("pages2", doc2.PageCount()))
-		result.SimilarityScore = 0.0
-		result.VisualComparison = VisualResult{
-			OverallScore:     0.0,
-			SamplingStrategy: "empty document mismatch",
-		}
-		result.Duration = time.Since(start)
-		result.Metadata.DurationMS = result.Duration.Milliseconds()
-		return result, nil
-	}
-
-	// Layer 2: Structural metadata check (fast early exit)
-	if c.opts.Mode == ModeAuto || c.opts.Mode == ModeVisual || c.opts.Mode == ModeFull {
-		result.ComparisonLayers = append(result.ComparisonLayers, "structural")
-		c.reportProgress("Structural check", 0, 1, 0.15)
-
-		// Compare first page structural info as a quick check
-		info1, err1 := doc1.PageInfo(0)
-		info2, err2 := doc2.PageInfo(0)
-
-		if err1 == nil && err2 == nil {
-			// If text hashes match, it's a very strong indicator of similarity
-			if info1.TextHash != 0 && info1.TextHash == info2.TextHash {
-				log.Debug("Text hashes match on first page", F("hash", info1.TextHash))
-			} else if info1.TextChars != info2.TextChars || info1.ObjectCount != info2.ObjectCount {
-				// If text length or object count varies, they are definitely different
-				textDiff := math.Abs(float64(info1.TextChars - info2.TextChars))
-				objDiff := math.Abs(float64(info1.ObjectCount - info2.ObjectCount))
-
-				if textDiff > 20 || objDiff > 5 {
-					log.Debug("Significant structural difference detected on first page",
-						F("text1", info1.TextChars), F("text2", info2.TextChars),
-						F("obj1", info1.ObjectCount), F("obj2", info2.ObjectCount))
-				}
-			}
-		}
-	}
-
-	pageCount := doc1.PageCount()
-
-	// Layer 2: Thumbnail comparison (quick visual check)
-	if c.opts.Sampling == SamplingAuto || c.opts.Sampling == SamplingThumbnailOnly {
-		result.ComparisonLayers = append(result.ComparisonLayers, "thumbnail")
-		c.reportProgress("Thumbnail check", 0, 2, 0.2)
-
-		thumbnailPages := []int{0} // First page
-		if pageCount > 1 {
-			thumbnailPages = append(thumbnailPages, pageCount-1) // Last page
-		}
-
-		thumbnailOpts := render.Options{DPI: render.DPIThumbnail}
-		thumbnailResults, err := c.comparePages(ctx, doc1, doc2, thumbnailPages, thumbnailOpts)
-		if err != nil {
-			return nil, fmt.Errorf("thumbnail comparison failed: %w", err)
-		}
-
-		// Check if thumbnails are very different (early exit)
-		avgSimilarity := averageSimilarity(thumbnailResults)
-		if avgSimilarity < ThumbnailEarlyExitThresh {
-			result.SimilarityScore = avgSimilarity
-			result.VisualComparison = VisualResult{
-				OverallScore:     avgSimilarity,
-				HashType:         hashTypeName(c.opts.HashType),
-				PagesCompared:    len(thumbnailPages),
-				SamplingStrategy: "thumbnail (early exit)",
-				DPI:              render.DPIThumbnail,
-			}
-			result.PageResults = thumbnailResults
-			result.Duration = time.Since(start)
-			result.Metadata.DurationMS = result.Duration.Milliseconds()
-			return result, nil
-		}
-
-		if c.opts.Sampling == SamplingThumbnailOnly {
-			result.SimilarityScore = avgSimilarity
-			result.VisualComparison = VisualResult{
-				OverallScore:     avgSimilarity,
-				HashType:         hashTypeName(c.opts.HashType),
-				PagesCompared:    len(thumbnailPages),
-				SamplingStrategy: "thumbnail only",
-				DPI:              render.DPIThumbnail,
-			}
-			result.PageResults = thumbnailResults
-			result.Duration = time.Since(start)
-			result.Metadata.DurationMS = result.Duration.Milliseconds()
-			return result, nil
-		}
-	}
-
-	// Layer 3: Strategic sampling
-	var pagesToCompare []int
-	var samplingName string
-
-	switch c.opts.Sampling {
-	case SamplingAll:
-		pagesToCompare = allPages(pageCount)
-		samplingName = "all"
-	case SamplingStrategic, SamplingAuto:
-		pagesToCompare = strategicSample(pageCount)
-		samplingName = "strategic"
-	default:
-		pagesToCompare = allPages(pageCount)
-		samplingName = "all"
-	}
-
-	result.ComparisonLayers = append(result.ComparisonLayers, "sample")
-	renderOpts := render.Options{DPI: c.opts.DPI}
-
-	// Compare sampled pages
-	c.reportProgress("Sampling pages", 0, len(pagesToCompare), 0.4)
-	sampleResults, err := c.comparePages(ctx, doc1, doc2, pagesToCompare, renderOpts)
-	if err != nil {
-		return nil, fmt.Errorf("sample comparison failed: %w", err)
-	}
-
-	sampleSimilarity := averageSimilarity(sampleResults)
-
-	// Layer 4: Full comparison if samples are very similar
-	if sampleSimilarity >= c.opts.SimilarityThreshold && c.opts.Sampling == SamplingAuto && len(pagesToCompare) < pageCount {
-		result.ComparisonLayers = append(result.ComparisonLayers, "full")
-		c.reportProgress("Full comparison", 0, pageCount, 0.6)
-
-		allPageNums := allPages(pageCount)
-		fullResults, err := c.comparePages(ctx, doc1, doc2, allPageNums, renderOpts)
-		if err != nil {
-			return nil, fmt.Errorf("full comparison failed: %w", err)
-		}
-
-		result.SimilarityScore = averageSimilarity(fullResults)
-		result.VisualComparison = VisualResult{
-			OverallScore:     result.SimilarityScore,
-			HashType:         hashTypeName(c.opts.HashType),
-			PagesCompared:    pageCount,
-			SamplingStrategy: "full",
-			DPI:              c.opts.DPI,
-		}
-		result.PageResults = fullResults
-	} else {
-		result.SimilarityScore = sampleSimilarity
-		result.VisualComparison = VisualResult{
-			OverallScore:     sampleSimilarity,
-			HashType:         hashTypeName(c.opts.HashType),
-			PagesCompared:    len(pagesToCompare),
-			SamplingStrategy: samplingName,
-			DPI:              c.opts.DPI,
-		}
-		result.PageResults = sampleResults
+	if err := c.runStages(ctx, result, pdf1, pdf2); err != nil {
+		return nil, err
 	}
 
 	result.Duration = time.Since(start)
@@ -345,311 +95,527 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 	return result, nil
 }
 
-// comparePages compares specific pages between two documents using a pipelined approach.
-// It renders and hashes pages concurrently, processing each page as soon as it's rendered
-// in both documents.
+// runStages fills in result one stage at a time, cheapest first, and stops at
+// the first stage that decides the comparison.
+func (c *comparer) runStages(ctx context.Context, result *Result, pdf1, pdf2 string) error {
+	if sameFile(pdf1, pdf2) {
+		c.opts.Logger.Debug("Self-comparison detected, returning identical")
+		result.setIdentical("skipped (same file)")
+		return nil
+	}
+	if err := result.statFiles(pdf1, pdf2); err != nil {
+		return err
+	}
+	if c.usesBytes() {
+		done, err := c.byteStage(result, pdf1, pdf2)
+		if err != nil || done {
+			return err
+		}
+	}
+	return c.visualStages(ctx, result, pdf1, pdf2)
+}
+
+// sameFile reports whether both paths name the same file.
+func sameFile(pdf1, pdf2 string) bool {
+	abs1, err1 := filepath.Abs(pdf1)
+	abs2, err2 := filepath.Abs(pdf2)
+	return err1 == nil && err2 == nil && abs1 == abs2
+}
+
+func (c *comparer) usesBytes() bool {
+	switch c.opts.Mode {
+	case ModeAuto, ModeByte, ModeFull:
+		return true
+	}
+	return false
+}
+
+func (c *comparer) usesThumbnails() bool {
+	return c.opts.Sampling == SamplingAuto || c.opts.Sampling == SamplingThumbnailOnly
+}
+
+// byteStage hashes both files. It decides the comparison when the files are
+// byte-identical, or when only a byte comparison was asked for.
+func (c *comparer) byteStage(result *Result, pdf1, pdf2 string) (bool, error) {
+	log := c.opts.Logger
+	result.ComparisonLayers = append(result.ComparisonLayers, "bytewise")
+	c.reportProgress("Byte comparison", 0, 1, 0.1)
+
+	byteResult, err := bytewise.Compare(pdf1, pdf2)
+	if err != nil {
+		return false, fmt.Errorf("byte comparison failed: %w", err)
+	}
+
+	result.ByteComparison = ByteResult{
+		Identical:  byteResult.Identical,
+		Hash1:      byteResult.Hash1,
+		Hash2:      byteResult.Hash2,
+		Size1:      byteResult.Size1,
+		Size2:      byteResult.Size2,
+		SizesMatch: byteResult.SizesMatch,
+	}
+
+	log.Debug("Byte comparison complete",
+		F("identical", byteResult.Identical),
+		F("sizesMatch", byteResult.SizesMatch))
+
+	if byteResult.Identical {
+		log.Info("Files are byte-identical, skipping visual comparison")
+		result.setIdentical("skipped (byte identical)")
+		return true, nil
+	}
+	if c.opts.Mode == ModeByte {
+		result.SimilarityScore = 0.0
+		return true, nil
+	}
+	return false, nil
+}
+
+// visualStages opens both documents and compares their pages: thumbnails
+// first, then a sample, then every page when the sample cannot decide.
+func (c *comparer) visualStages(ctx context.Context, result *Result, pdf1, pdf2 string) error {
+	doc1, err := c.renderer.Open(pdf1)
+	if err != nil {
+		return fmt.Errorf("failed to open %s: %w", pdf1, err)
+	}
+	defer func() { _ = doc1.Close() }()
+
+	doc2, err := c.renderer.Open(pdf2)
+	if err != nil {
+		return fmt.Errorf("failed to open %s: %w", pdf2, err)
+	}
+	defer func() { _ = doc2.Close() }()
+
+	if c.pageCountStage(result, doc1, doc2) {
+		return nil
+	}
+	if c.usesThumbnails() {
+		done, err := c.thumbnailStage(ctx, result, doc1, doc2)
+		if err != nil || done {
+			return err
+		}
+	}
+	return c.sampleStage(ctx, result, doc1, doc2)
+}
+
+// pageCountStage records both page counts. It decides the comparison when
+// both documents are empty, or when their page counts differ: a page missing
+// from one document has nothing to be similar to, so the documents score 0.
+// Pages are paired by index, and rendering past the shorter document would
+// only fail.
+func (c *comparer) pageCountStage(result *Result, doc1, doc2 render.Document) bool {
+	n1, n2 := doc1.PageCount(), doc2.PageCount()
+	result.Metadata.Pages1, result.Metadata.Pages2 = n1, n2
+
+	switch {
+	case n1 == 0 && n2 == 0:
+		c.opts.Logger.Debug("Both PDFs have 0 pages, treating as identical")
+		result.setIdentical("empty documents")
+		return true
+	case n1 != n2:
+		c.opts.Logger.Debug("Page counts differ", F("pages1", n1), F("pages2", n2))
+		result.SimilarityScore = 0.0
+		result.VisualComparison = VisualResult{
+			OverallScore:     0.0,
+			SamplingStrategy: "page count mismatch",
+		}
+		return true
+	}
+	return false
+}
+
+// thumbnailStage compares the first and last pages at thumbnail DPI. It
+// decides the comparison when a thumbnail is very different, or when only
+// thumbnails were asked for.
+func (c *comparer) thumbnailStage(ctx context.Context, result *Result, doc1, doc2 render.Document) (bool, error) {
+	result.ComparisonLayers = append(result.ComparisonLayers, "thumbnail")
+	c.reportProgress("Thumbnail check", 0, 2, 0.2)
+
+	pages := []int{0}
+	if n := doc1.PageCount(); n > 1 {
+		pages = append(pages, n-1)
+	}
+	results, err := c.comparePages(ctx, doc1, doc2, pages, render.Options{DPI: render.DPIThumbnail})
+	if err != nil {
+		return false, fmt.Errorf("thumbnail comparison failed: %w", err)
+	}
+
+	switch {
+	case worstSimilarity(results) < ThumbnailEarlyExitThresh:
+		result.setPages(results, "thumbnail (early exit)", c.opts.HashType, render.DPIThumbnail)
+		return true, nil
+	case c.opts.Sampling == SamplingThumbnailOnly:
+		result.setPages(results, "thumbnail only", c.opts.HashType, render.DPIThumbnail)
+		return true, nil
+	}
+	return false, nil
+}
+
+// sampleStage compares a sample of pages, then every page when the whole
+// sample is similar and sampling left pages out. One sampled page below the
+// threshold already makes the documents different, so only an all-similar
+// sample earns the full comparison.
+func (c *comparer) sampleStage(ctx context.Context, result *Result, doc1, doc2 render.Document) error {
+	pageCount := doc1.PageCount()
+	pages, strategy := c.samplePages(pageCount)
+	renderOpts := render.Options{DPI: c.opts.DPI}
+
+	result.ComparisonLayers = append(result.ComparisonLayers, "sample")
+	c.reportProgress("Sampling pages", 0, len(pages), 0.4)
+	results, err := c.comparePages(ctx, doc1, doc2, pages, renderOpts)
+	if err != nil {
+		return fmt.Errorf("sample comparison failed: %w", err)
+	}
+
+	full := worstSimilarity(results) >= c.opts.SimilarityThreshold &&
+		c.opts.Sampling == SamplingAuto && len(pages) < pageCount
+	if !full {
+		result.setPages(results, strategy, c.opts.HashType, c.opts.DPI)
+		return nil
+	}
+
+	result.ComparisonLayers = append(result.ComparisonLayers, "full")
+	c.reportProgress("Full comparison", 0, pageCount, 0.6)
+	results, err = c.comparePages(ctx, doc1, doc2, allPages(pageCount), renderOpts)
+	if err != nil {
+		return fmt.Errorf("full comparison failed: %w", err)
+	}
+	result.setPages(results, "full", c.opts.HashType, c.opts.DPI)
+	return nil
+}
+
+// samplePages returns the pages the sample stage compares and the name of
+// the strategy that chose them.
+func (c *comparer) samplePages(pageCount int) ([]int, string) {
+	switch c.opts.Sampling {
+	case SamplingStrategic, SamplingAuto:
+		return strategicSample(pageCount), "strategic"
+	default:
+		return allPages(pageCount), "all"
+	}
+}
+
+// comparePages compares specific pages between two documents. Pages whose
+// text decides them are scored without rendering; the rest are rendered in
+// both documents and scored as soon as both renders of a page are ready.
 func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document, pages []int, opts render.Options) ([]PageResult, error) {
 	if len(pages) == 0 {
 		return nil, nil
 	}
 
-	// Adjust workers based on memory constraints
-	effectiveWorkers := c.adjustWorkersForMemory(doc1)
+	plan := c.planPages(doc1, doc2, pages)
+	if len(plan.render) == 0 {
+		return plan.results, nil
+	}
+	c.reportProgress("Pipelined processing", len(pages)-len(plan.render), len(pages), 0.3)
 
-	// Optimization: Text-First Optimistic Match
-	// We check text hashes for all sampled pages first.
-	// If text matches, we assume identity and skip rendering.
-	// This is ~16x faster than rendering.
+	pageNums := make([]int, len(plan.render))
+	for j, i := range plan.render {
+		pageNums[j] = pages[i]
+	}
+	err := c.renderPairs(ctx, doc1, doc2, pageNums, opts, func(j int, img1, img2 image.Image) {
+		i := plan.render[j]
+		plan.results[i] = c.scorePage(pages[i], img1, img2, plan.infos[i], plan.textSims[i])
+	})
+	if err != nil {
+		return nil, err
+	}
+	return plan.results, nil
+}
 
-	results := make([]PageResult, len(pages))
-	pagesToRender := make([]int, 0, len(pages))
-	textMatches := make(map[int]bool) // Key is index in 'pages' slice
+// pagePlan is what comparePages knows about each page before rendering.
+// results, infos and textSims are indexed like comparePages' pages.
+type pagePlan struct {
+	results  []PageResult   // filled in now for pages that text decides
+	render   []int          // indexes of the pages still to render
+	infos    []pageInfoPair // page info of the pages to render, text dropped
+	textSims []*float64     // text similarity of the pages to render
+}
 
-	// We do this serially because PageInfo is fast (~0.25ms) and the main doc instance is available.
-	// For huge page counts, we might want to parallelize, but for valid sample sizes this is fine.
+// planPages reads every page's info before anything is rendered, which is
+// about 16x faster than rendering. A page that text decides is scored now;
+// every other page is scheduled for rendering, with its text similarity
+// scored now so that rendering workers never call back into the PDF engine.
+func (c *comparer) planPages(doc1, doc2 render.Document, pages []int) pagePlan {
+	plan := pagePlan{
+		results:  make([]PageResult, len(pages)),
+		infos:    make([]pageInfoPair, len(pages)),
+		textSims: make([]*float64, len(pages)),
+	}
 	for i, pageNum := range pages {
 		info1, err1 := doc1.PageInfo(pageNum)
 		info2, err2 := doc2.PageInfo(pageNum)
+		ok := err1 == nil && err2 == nil
 
-		// Conditions for skipping render:
-		// 1. Both pages valid
-		// 2. Both have text content (Hash != 0)
-		// 3. Text Hashes match
-		// 4. Object counts match (extra safety against invisible text changes with graphical changes)
-		if err1 == nil && err2 == nil && info1.TextHash != 0 && info2.TextHash != 0 {
-			if info1.TextHash == info2.TextHash && info1.ObjectCount == info2.ObjectCount {
-				textMatches[i] = true
-				// We still add to results immediately
-				results[i] = PageResult{
-					Page:          pageNum + 1,
-					Similarity:    1.0, 
-					IsDifferent:   false,
-					// Metadata to indicate skipped render
-					DHashDistance: 0,
-				}
-				continue
-			}
+		if ok && textDecides(info1, info2) {
+			plan.results[i] = PageResult{Page: pageNum + 1, Similarity: 1.0}
+			continue
 		}
-		pagesToRender = append(pagesToRender, pageNum)
+		if ok {
+			plan.textSims[i] = c.textSimilarity(info1, info2)
+		}
+		info1.Text, info2.Text = "", "" // scored; keep only the metadata
+		plan.infos[i] = pageInfoPair{info1: info1, info2: info2, ok: ok}
+		plan.render = append(plan.render, i)
 	}
+	return plan
+}
 
-	// If all pages matched via text, return early!
-	if len(pagesToRender) == 0 {
-		return results, nil
-	}
+// textDecides reports whether two pages are identical by text alone: both
+// have text, it hashes the same, and so does their object count, which
+// guards against a graphical change beside unchanged text.
+func textDecides(info1, info2 render.PageInfo) bool {
+	return info1.TextHash != 0 && info1.TextHash == info2.TextHash && info1.ObjectCount == info2.ObjectCount
+}
 
-	c.reportProgress("Pipelined processing", len(pages)-len(pagesToRender), len(pages), 0.3)
+// renderPairs renders pageNums in both documents and calls score with each
+// page's two renders as soon as both are ready, from up to the
+// memory-adjusted worker count of goroutines at once. j is the page's index
+// in pageNums. A page that fails to render in either document is not scored;
+// the errors are returned together once every page is done.
+func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, pageNums []int, opts render.Options, score func(j int, img1, img2 image.Image)) error {
+	workers := c.adjustWorkersForMemory(doc1)
+	// Twice the workers lets rendering run ahead of scoring without
+	// unbounded memory growth.
+	bufferSize := min(workers*2, len(pageNums))
+	pairer := &pagePairer{renders: map[int]*[2]image.Image{}, jobs: make(chan int, bufferSize)}
 
-	// Buffer size for backpressure: 2x workers to allow pipeline overlap
-	// This prevents unbounded memory growth for large documents
-	bufferSize := effectiveWorkers * 2
-	if bufferSize > len(pagesToRender) {
-		bufferSize = len(pagesToRender)
-	}
-
-	// Channels for rendered pages (bounded for backpressure)
-	out1 := make(chan render.RenderedPage, bufferSize)
-	out2 := make(chan render.RenderedPage, bufferSize)
-
-	// Start streamers
-	var wgRender sync.WaitGroup
-	wgRender.Add(2)
-
-	errCh := make(chan error, 2)
-
-	// Context for cancellation
-	// renderCtx, cancel := context.WithCancel(ctx)
-	// defer cancel() -> actually we use main ctx
-
+	// Page errors are collected while the pipeline runs, so a page that fails
+	// to render can never block a receiver.
+	pageErrCh := make(chan error)
+	var pageErrs []error
+	collected := make(chan struct{})
 	go func() {
-		defer wgRender.Done()
-		if err := doc1.RenderPagesStream(ctx, pagesToRender, opts, out1); err != nil {
-			errCh <- fmt.Errorf("doc1 render failed: %w", err)
+		for err := range pageErrCh {
+			pageErrs = append(pageErrs, err)
 		}
-		close(out1)
+		close(collected)
 	}()
 
-	go func() {
-		defer wgRender.Done()
-		if err := doc2.RenderPagesStream(ctx, pagesToRender, opts, out2); err != nil {
-			errCh <- fmt.Errorf("doc2 render failed: %w", err)
-		}
-		close(out2)
-	}()
-
-	// Pairing and Hashing Pipeline
-	// We need to match pages by their index in the 'pagesToRender' logic.
-	// Since 'RenderPagesStream' returns the index from the input slice,
-	// we need to map that back to the original 'results' index.
-	
-	// Create a map from [index in pagesToRender] -> [index in original pages]
-	renderIndexMap := make(map[int]int, len(pagesToRender))
-	filteredIdx := 0
-	for originalIdx := range pages {
-		if !textMatches[originalIdx] {
-			renderIndexMap[filteredIdx] = originalIdx
-			filteredIdx++
-		}
-	}
-
-	type pair struct {
-		img1 image.Image
-		img2 image.Image
-	}
-	pairs := make(map[int]*pair)
-	var pairsMu sync.Mutex
-
-	// Bounded channels for backpressure
-	hashJobs := make(chan int, bufferSize)
-	var wgReceivers sync.WaitGroup
-	wgReceivers.Add(2)
-
-	// Channel for per-page render errors (bounded)
-	pageErrCh := make(chan error, bufferSize*2)
-
-	// Receiver for Doc 1
-	go func() {
-		defer wgReceivers.Done()
-		for res := range out1 {
-			if res.Err != nil {
-				pageErrCh <- fmt.Errorf("doc1 page %d: %w", pages[res.Index], res.Err)
-				continue
-			}
-			pairsMu.Lock()
-			if p, ok := pairs[res.Index]; ok {
-				p.img1 = res.Image
-				if p.img2 != nil {
-					hashJobs <- res.Index
-				}
-			} else {
-				pairs[res.Index] = &pair{img1: res.Image}
-			}
-			pairsMu.Unlock()
-		}
-	}()
-
-	// Receiver for Doc 2
-	go func() {
-		defer wgReceivers.Done()
-		for res := range out2 {
-			if res.Err != nil {
-				pageErrCh <- fmt.Errorf("doc2 page %d: %w", pages[res.Index], res.Err)
-				continue
-			}
-			pairsMu.Lock()
-			if p, ok := pairs[res.Index]; ok {
-				p.img2 = res.Image
-				if p.img1 != nil {
-					hashJobs <- res.Index
-				}
-			} else {
-				pairs[res.Index] = &pair{img2: res.Image}
-			}
-			pairsMu.Unlock()
-		}
-	}()
-
-	// Hashing Workers (use memory-adjusted worker count)
-	var wgHash sync.WaitGroup
-	processedChan := make(chan int, bufferSize)
-
-	for i := 0; i < effectiveWorkers; i++ {
-		wgHash.Add(1)
+	streamErrCh := make(chan error, 2)
+	var receivers sync.WaitGroup
+	for d, doc := range []render.Document{doc1, doc2} {
+		out := make(chan render.RenderedPage, bufferSize)
 		go func() {
-			defer wgHash.Done()
-			for jobIdx := range hashJobs {
-				pairsMu.Lock()
-				p := pairs[jobIdx]
-				img1, img2 := p.img1, p.img2
-				delete(pairs, jobIdx)
-				pairsMu.Unlock()
+			if err := doc.RenderPagesStream(ctx, pageNums, opts, out); err != nil {
+				streamErrCh <- fmt.Errorf("doc%d render failed: %w", d+1, err)
+			}
+			close(out)
+		}()
+		receivers.Add(1)
+		go func() {
+			defer receivers.Done()
+			pairer.receive(d, out, pageNums, pageErrCh)
+		}()
+	}
 
-				// Map back to original index in 'results'
-				originalIdx := renderIndexMap[jobIdx]
-				pageNum := pages[originalIdx]
-				var dHash1, dHash2, pHash1, pHash2 uint64
-				var dDist, pDist int
-				var similarity float64
-
-				// Optimization: Quick Histogram check
-				hist1 := visual.ComputeHistogram(img1)
-				hist2 := visual.ComputeHistogram(img2)
-				histSim := visual.HistogramSimilarity(hist1, hist2)
-
-				if histSim < 0.8 { // If colors are extremely different, don't bother with hashes
-					similarity = histSim * 0.5 // Penalty for color mismatch
-				} else {
-					switch c.opts.HashType {
-					case HashDHash:
-						dHash1, dHash2, dDist = visual.ComputeDHashPair(img1, img2)
-						similarity = visual.Similarity(dDist)
-					case HashPHash:
-						pHash1, pHash2, pDist = visual.ComputePHashPair(img1, img2)
-						similarity = visual.Similarity(pDist)
-					default:
-						// Step 1: dHash (Fast Structure Check)
-						dHash1 = visual.DHash(img1)
-						dHash2 = visual.DHash(img2)
-						dDist = visual.HammingDistance(dHash1, dHash2)
-
-						// Optimization: "Cascading Hash"
-						// If dHash shows images are very different (< 40% similar), pHash (frequency)
-						// is unlikely to salvage the match. We skip the expensive DCT.
-						dSim := visual.Similarity(dDist)
-						if dSim < 0.4 {
-							similarity = dSim
-							// Leave pHash as 0 to indicate skipped
-						} else {
-							// Step 2: pHash (Refined Frequency Check)
-							pHash1 = visual.PHash(img1)
-							pHash2 = visual.PHash(img2)
-							pDist = visual.HammingDistance(pHash1, pHash2)
-							similarity = visual.CombinedSimilarity(dHash1, dHash2, pHash1, pHash2)
-						}
-					}
-				}
-
-				// Further refinement: If similarity is high but text hashes exist and mismatch, penalize
-				info1, err1 := doc1.PageInfo(pageNum)
-				info2, err2 := doc2.PageInfo(pageNum)
-				if err1 == nil && err2 == nil && info1.TextHash != 0 && info2.TextHash != 0 {
-					if info1.TextHash != info2.TextHash {
-						// Text changed but visual is similar? Penalize similarity
-						similarity *= 0.95
-					} else {
-						// Text is identical! Boost confidence if visual is also close
-						if similarity > 0.9 {
-							similarity = math.Max(similarity, 0.99)
-						}
-					}
-				}
-
-				results[originalIdx] = PageResult{
-					Page:          pageNum + 1,
-					Similarity:    similarity,
-					DHashDistance: dDist,
-					PHashDistance: pDist,
-					DHash1:        dHash1,
-					DHash2:        dHash2,
-					PHash1:        pHash1,
-					PHash2:        pHash2,
-					IsDifferent:   similarity < c.opts.SimilarityThreshold,
-				}
-				// We notify processedChan with the job index to match the waiter logic
-				processedChan <- jobIdx
+	var scorers sync.WaitGroup
+	for range workers {
+		scorers.Add(1)
+		go func() {
+			defer scorers.Done()
+			for j := range pairer.jobs {
+				img1, img2 := pairer.take(j)
+				score(j, img1, img2)
 			}
 		}()
 	}
 
-	// Close hashJobs once all pairs are sent
-	go func() {
-		wgReceivers.Wait()
-		close(hashJobs)
-	}()
-
-	// Wait for rendering to complete, collecting stream-level errors
-	var renderErrors []error
-	// Initialize count with number of pages we already "processed" via text match
-	count := len(textMatches) 
-	for count < len(pages) {
-		select {
-		case err := <-errCh:
-			if err != nil {
-				renderErrors = append(renderErrors, err)
-			}
-			// Continue processing - other pages may still succeed
-		case <-processedChan:
-			count++
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-
-	// Wait for remaining workers to finish
-	wgHash.Wait()
-
-	// Wait for receivers to complete and close pageErrCh
-	wgReceivers.Wait()
-
-	// Collect any per-page render errors
+	// Each receiver finishes when its stream closes. Once both have, every
+	// page has been queued or has failed to render, so closing jobs lets the
+	// scorers drain and stop.
+	receivers.Wait()
+	close(pairer.jobs)
 	close(pageErrCh)
-	for err := range pageErrCh {
-		renderErrors = append(renderErrors, err)
+	scorers.Wait()
+	<-collected
+
+	// The streams send to streamErrCh before closing their output, and the
+	// receivers have seen both outputs close, so no send remains.
+	close(streamErrCh)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var errs []error
+	for err := range streamErrCh {
+		errs = append(errs, err)
+	}
+	return joinRenderErrors(append(errs, pageErrs...))
+}
+
+// pagePairer matches the two renders of each page and queues the page for
+// scoring once both have arrived. Pages are keyed by their index in the
+// rendered page list.
+type pagePairer struct {
+	mu      sync.Mutex
+	renders map[int]*[2]image.Image
+	jobs    chan int
+}
+
+// receive feeds document d's renders into the pairer until its stream
+// closes, sending each failed page's error to errs.
+func (p *pagePairer) receive(d int, out <-chan render.RenderedPage, pageNums []int, errs chan<- error) {
+	for res := range out {
+		if res.Err != nil {
+			errs <- fmt.Errorf("doc%d page %d: %w", d+1, pageNums[res.Index], res.Err)
+			continue
+		}
+		p.add(res.Index, d, res.Image)
+	}
+}
+
+// add records document d's render of page j and queues the page when the
+// other render is already there. It sends outside the lock: a scorer needs
+// mu to take a job, so blocking on a full jobs channel while holding it
+// would deadlock.
+func (p *pagePairer) add(j, d int, img image.Image) {
+	p.mu.Lock()
+	pair, ok := p.renders[j]
+	if !ok {
+		pair = new([2]image.Image)
+		p.renders[j] = pair
+	}
+	pair[d] = img
+	ready := pair[0] != nil && pair[1] != nil
+	p.mu.Unlock()
+
+	if ready {
+		p.jobs <- j
+	}
+}
+
+// take removes and returns page j's two renders.
+func (p *pagePairer) take(j int) (image.Image, image.Image) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	pair := p.renders[j]
+	delete(p.renders, j)
+	return pair[0], pair[1]
+}
+
+// joinRenderErrors returns nil, the single error, or every error in one.
+func joinRenderErrors(errs []error) error {
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	}
+	msg := fmt.Sprintf("%d render errors occurred:", len(errs))
+	for i, err := range errs {
+		msg += fmt.Sprintf("\n  [%d] %v", i+1, err)
+	}
+	return errors.New(msg)
+}
+
+// scorePage scores one page (0-indexed pageNum) from its two renders: a
+// visual score, then the page's text folded in (see textAdjust).
+func (c *comparer) scorePage(pageNum int, img1, img2 image.Image, info pageInfoPair, textSim *float64) PageResult {
+	r := c.visualScore(img1, img2)
+	r.Page = pageNum + 1
+	r.Similarity = textAdjust(r.Similarity, info, textSim)
+	r.TextSimilarity = textSim
+	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold
+	return r
+}
+
+// visualScore compares two renders. It checks colour histograms first, since
+// pages whose colours differ this much need no hashing, then runs the
+// configured perceptual hashes.
+func (c *comparer) visualScore(img1, img2 image.Image) PageResult {
+	histSim := visual.HistogramSimilarity(visual.ComputeHistogram(img1), visual.ComputeHistogram(img2))
+	if histSim < 0.8 {
+		return PageResult{Similarity: histSim * 0.5} // penalty for a colour mismatch
 	}
 
-	// Report aggregated render errors if any
-	if len(renderErrors) > 0 {
-		if len(renderErrors) == 1 {
-			return nil, renderErrors[0]
-		}
-		errMsg := fmt.Sprintf("%d render errors occurred:", len(renderErrors))
-		for i, err := range renderErrors {
-			errMsg += fmt.Sprintf("\n  [%d] %v", i+1, err)
-		}
-		return nil, fmt.Errorf("%s", errMsg)
+	var r PageResult
+	switch c.opts.HashType {
+	case HashDHash:
+		r.DHash1, r.DHash2, r.DHashDistance = visual.ComputeDHashPair(img1, img2)
+		r.Similarity = visual.Similarity(r.DHashDistance)
+	case HashPHash:
+		r.PHash1, r.PHash2, r.PHashDistance = visual.ComputePHashPair(img1, img2)
+		r.Similarity = visual.Similarity(r.PHashDistance)
+	default:
+		r = cascadeHashes(img1, img2)
 	}
+	return r
+}
 
-	return results, nil
+// cascadeHashes runs dHash, then pHash only when dHash finds the pages at
+// least 40% similar: below that the DCT is unlikely to salvage the match. A
+// skipped pHash is left at 0.
+func cascadeHashes(img1, img2 image.Image) PageResult {
+	r := PageResult{DHash1: visual.DHash(img1), DHash2: visual.DHash(img2)}
+	r.DHashDistance = visual.HammingDistance(r.DHash1, r.DHash2)
+	if dSim := visual.Similarity(r.DHashDistance); dSim < 0.4 {
+		r.Similarity = dSim
+		return r
+	}
+	r.PHash1, r.PHash2 = visual.PHash(img1), visual.PHash(img2)
+	r.PHashDistance = visual.HammingDistance(r.PHash1, r.PHash2)
+	r.Similarity = visual.CombinedSimilarity(r.DHash1, r.DHash2, r.PHash1, r.PHash2)
+	return r
+}
+
+// textAdjust folds a page's text into its visual similarity when both pages
+// have text. Identical text lifts a close visual score to 0.99. Text that
+// differs costs 5%, and its estimated similarity, when there is one, caps the
+// score: perceptual hashes see where text sits, not what it says, so a page
+// rewritten in the same layout scores as visually similar.
+func textAdjust(similarity float64, info pageInfoPair, textSim *float64) float64 {
+	if !info.ok || info.info1.TextHash == 0 || info.info2.TextHash == 0 {
+		return similarity
+	}
+	if info.info1.TextHash == info.info2.TextHash {
+		if similarity > 0.9 {
+			return math.Max(similarity, 0.99)
+		}
+		return similarity
+	}
+	similarity *= 0.95
+	if textSim != nil {
+		similarity = math.Min(similarity, *textSim)
+	}
+	return similarity
+}
+
+// setIdentical records documents found identical without comparing pages.
+func (r *Result) setIdentical(strategy string) {
+	r.Identical = true
+	r.SimilarityScore = 1.0
+	r.VisualComparison = VisualResult{
+		OverallScore:     1.0,
+		SamplingStrategy: strategy,
+	}
+}
+
+// setPages records the compared pages. The documents score as their least
+// similar page; the visual result keeps the mean.
+func (r *Result) setPages(pages []PageResult, strategy string, hashType HashType, dpi int) {
+	r.SimilarityScore = worstSimilarity(pages)
+	r.VisualComparison = VisualResult{
+		OverallScore:     averageSimilarity(pages),
+		HashType:         hashTypeName(hashType),
+		PagesCompared:    len(pages),
+		SamplingStrategy: strategy,
+		DPI:              dpi,
+	}
+	r.PageResults = pages
+}
+
+// statFiles records both file sizes.
+func (r *Result) statFiles(pdf1, pdf2 string) error {
+	stat1, err := os.Stat(pdf1)
+	if err != nil {
+		return fmt.Errorf("cannot access %s: %w", pdf1, err)
+	}
+	stat2, err := os.Stat(pdf2)
+	if err != nil {
+		return fmt.Errorf("cannot access %s: %w", pdf2, err)
+	}
+	r.Metadata.Size1, r.Metadata.Size2 = stat1.Size(), stat2.Size()
+	return nil
 }
 
 func (c *comparer) reportProgress(stage string, current, total int, pct float64) {
@@ -704,59 +670,70 @@ func (c *comparer) adjustWorkersForMemory(doc render.Document) int {
 	return workers
 }
 
-// strategicSample returns page indices for strategic sampling.
-// Formula: min(sqrt(n) + 2, n) pages, including first, last, middle, and distributed samples.
+// strategicSample returns the pages to sample from a document: every page
+// of a document of five pages or fewer, otherwise sqrt(n)+2 pages including
+// the first, last and middle, with the rest spread evenly between. Spread
+// pages that land on one already chosen make the sample smaller.
 func strategicSample(pageCount int) []int {
 	if pageCount <= 5 {
 		return allPages(pageCount)
 	}
 
-	// Calculate sample size: sqrt(n) + 2, but at least 3 and at most pageCount
+	// For n > 5, sqrt(n)+2 is at least 4 and less than n, and first, last
+	// and middle are three distinct pages, so at least one page is spread.
 	sampleSize := int(math.Sqrt(float64(pageCount))) + 2
-	if sampleSize < 3 {
-		sampleSize = 3
-	}
-	if sampleSize > pageCount {
-		sampleSize = pageCount
-	}
-
-	pages := make(map[int]bool)
-
-	// Always include first and last
-	pages[0] = true
-	pages[pageCount-1] = true
-
-	// Include middle
-	pages[pageCount/2] = true
-
-	// Distribute remaining samples evenly
+	pages := map[int]bool{0: true, pageCount - 1: true, pageCount / 2: true}
 	remaining := sampleSize - len(pages)
-	if remaining > 0 {
-		step := float64(pageCount-1) / float64(remaining+1)
-		for i := 1; i <= remaining; i++ {
-			idx := int(step * float64(i))
-			pages[idx] = true
-		}
+	step := float64(pageCount-1) / float64(remaining+1)
+	for i := 1; i <= remaining; i++ {
+		pages[int(step*float64(i))] = true
 	}
 
-	// Convert to sorted slice
 	result := make([]int, 0, len(pages))
-	for i := 0; i < pageCount; i++ {
+	for i := range pageCount {
 		if pages[i] {
 			result = append(result, i)
 		}
 	}
-
 	return result
 }
 
-// allPages returns all page indices
 func allPages(count int) []int {
 	pages := make([]int, count)
 	for i := 0; i < count; i++ {
 		pages[i] = i
 	}
 	return pages
+}
+
+// pageInfoPair holds the page info of one page number in both documents.
+type pageInfoPair struct {
+	info1, info2 render.PageInfo
+	ok           bool // both PageInfo calls succeeded
+}
+
+// textSimilarity estimates how much text two pages share. It returns nil when
+// text hashing is off, when either page has no text, or when the text is
+// identical, so that the exact-hash path above decides.
+func (c *comparer) textSimilarity(info1, info2 render.PageInfo) *float64 {
+	if c.opts.TextHash == TextHashOff || info1.TextHash == 0 || info2.TextHash == 0 || info1.TextHash == info2.TextHash {
+		return nil
+	}
+	s := content.MinHashSimilarity(info1.Text, info2.Text)
+	return &s
+}
+
+// worstSimilarity returns the lowest similarity among page results: the
+// document is only as similar as its least similar page.
+func worstSimilarity(results []PageResult) float64 {
+	if len(results) == 0 {
+		return 1.0
+	}
+	worst := results[0].Similarity
+	for _, r := range results[1:] {
+		worst = math.Min(worst, r.Similarity)
+	}
+	return worst
 }
 
 // averageSimilarity calculates the average similarity from page results

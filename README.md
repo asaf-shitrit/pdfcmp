@@ -1,6 +1,6 @@
 # pdfcmp
 
-`pdfcmp` is a lightning-fast PDF comparison engine and Go library. It utilizes a layered pipeline—combining byte-level hashing, structural analysis, and perceptual visual comparison—to detect document similarities with maximum efficiency and accuracy.
+`pdfcmp` is a lightning-fast PDF comparison engine and Go library. It utilizes a layered pipeline—combining byte-level hashing, text similarity, and perceptual visual comparison—to detect document similarities with maximum efficiency and accuracy.
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/asafshitrit/pdfcmp.svg)](https://pkg.go.dev/github.com/asafshitrit/pdfcmp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -10,14 +10,16 @@
 The tool follows a layered approach to avoid heavy rendering whenever possible. It includes new **Smart Heuristics** to speed up decision making:
 
 1.  **Metadata**: Checks page counts and basic file attributes.
-2.  **Structural Check**: Compares text character counts and graphical object counts per page to detect layout changes without rendering.
-3.  **Byte-wise**: Runs an xxHash64 check to catch identical files instantly (~9 GB/s).
-4.  **Visual Thumbnails**:
+2.  **Byte-wise**: Runs an xxHash64 check to catch identical files instantly (~9 GB/s).
+3.  **Visual Thumbnails**:
     *   **Histogram Pre-check**: Calculates RGB histograms to reject major color differences instantly (2x faster than hashing).
     *   **Low-Res Render**: Renders first and last pages at 72 DPI for perceptual analysis.
-5.  **Text Fingerprinting**: Extracts text and compares its hash. Identical text content with similar layout boosts confidence significantly.
+4.  **Text Fingerprinting**: Extracts each page's text and compares its hash. Identical text content with similar layout boosts confidence significantly.
+5.  **Text Similarity**: When the text differs, a MinHash signature of its word 3-shingles estimates how much of it the two pages share, and that caps the page's score. Perceptual hashes see where text sits, not what it says, so without this a page rewritten in the same layout still scores 81-89% visually similar.
 6.  **Strategic Sampling**: For long documents, it analyzes a subset of pages ($\sqrt{n} + 2$) to estimate similarity.
 7.  **Full Analysis**: If needed, it performs a complete page-by-page comparison using perceptual hashing (dHash and pHash).
+
+A document is only as similar as its least similar page: the similarity score is the lowest page score, so one changed page makes a 100-page document different. The JSON output keeps the mean as `visual_comparison.overall_score`.
 
 Rendering is powered by **PDFium** via WebAssembly, and the analysis is fully concurrent to make the most of multi-core CPUs.
 
@@ -47,6 +49,7 @@ pdfcmp compare file1.pdf file2.pdf
 **Common flags:**
 - `--threshold 0.98`: Adjust similarity sensitivity (default is 0.95).
 - `--sampling all`: Scan every page instead of using the sampling heuristic.
+- `--text-hash off`: Compare page text by exact hash only, as v0.1.0 did.
 - `--format json`: Get detailed results in JSON format.
 - `-v`: Show progress and stage information.
 
@@ -134,6 +137,28 @@ The tool combines **dHash** (structure), **pHash** (frequency), and **histogram*
 - **Histogram** is excellent for quick color-based rejection
 - **Combined approach** provides best overall accuracy
 
+### Text changes
+
+Perceptual hashes are built to survive the edits above, which is also why they miss a change of words. `bench/content_matrix_test.go` builds text PDFs of 1, 5, 10, 30 and 100 pages, 25 lines a page, changes only the middle page, and compares at 72, 150 and 300 DPI. The table counts how many of those 15 comparisons each version calls different at the default 0.95 threshold:
+
+| Middle page change | v0.1.0 | text hash off | MinHash (default) | SimHash (not shipped) |
+| :--- | :---: | :---: | :---: | :---: |
+| None (rebuilt, new bytes) | 0/15 | 0/15 | 0/15 | 0/15 |
+| Every line rewritten | 3/15 | 15/15 | 15/15 | 15/15 |
+| 12 of 25 lines rewritten | | 15/15 | 15/15 | 15/15 |
+| One line rewritten | | 11/15 | 15/15 | 13/15 |
+| One digit of a total | 2/15 | 3/15 | 3/15 | 3/15 |
+
+v0.1.0 averaged page scores, so one rewritten page of five or more passed. Scoring by the worst page fixes that on its own, but only by margin: a rewritten page still scores 0.81-0.89 on its perceptual hashes, so a threshold of 0.80 would pass it again. MinHash scores it below 0.01. A single changed number moves 3 of a page's ~230 shingles, an exact Jaccard similarity of 0.975, and both text hashes put it at 0.95 or above, so it passes the default threshold in every mode.
+
+pdfcmp uses MinHash, not SimHash, because SimHash counts repeated wording where MinHash sees a set. On a templated page, where every line repeats a label and only the values differ, a shingle repeated ten times outvotes the ten changed values. Five such pages with all ten values changed have an exact Jaccard similarity of 0.36-0.38; MinHash reads 0.31-0.41 and SimHash 0.96-0.99. SimHash's 8-byte fingerprint would only pay for itself if pdfcmp stored signatures, which it does not. `bench/simhash_test.go` keeps it for the comparison above.
+
+Run the matrix with:
+
+```bash
+PDFCMP_MATRIX=1 go test ./bench -run 'TestContentMatrix|TestTemplatedPage' -v
+```
+
 ### Test Coverage
 
 Benchmarks include diverse PDF types to ensure robustness:
@@ -148,9 +173,11 @@ Benchmarks include diverse PDF types to ensure robustness:
 
 ## Development
 
-- **Tests**: `make test`
-- **Benchmarks**: `make bench`
+- **Tests**: `make test`. Tests write the PDFs they need from `internal/fixtures`.
+- **Benchmarks**: `make fixtures`, then `make bench`.
 - **Linting**: `make lint`
+
+`go test -race` reports a data race inside wazero when two documents render at once ([wazero/wazero#2520](https://github.com/wazero/wazero/issues/2520)): instances that share a compiled module memoize function-type keys without synchronization.
 
 ## License
 MIT - Copyright (c) 2026 Asaf Shitrit.
