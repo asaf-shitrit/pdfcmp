@@ -25,7 +25,7 @@ func fixtureExists(name string) bool {
 
 func BenchmarkRender_72DPI(b *testing.B) {
 	if !fixtureExists("single_a.pdf") {
-		b.Skip("Fixtures not generated. Run: go run bench/fixtures/generate.go bench/fixtures/")
+		b.Skip("Fixtures not generated. Run: make fixtures")
 	}
 
 	renderer, err := render.NewPdfiumRenderer()

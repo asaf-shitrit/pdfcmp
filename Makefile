@@ -1,4 +1,4 @@
-.PHONY: build test bench clean install lint fmt
+.PHONY: build test bench clean install lint fmt fixtures
 
 # Binary name
 BINARY=pdfcmp
@@ -65,12 +65,16 @@ fmt:
 lint:
 	golangci-lint run
 
+# Generate benchmark fixtures into bench/fixtures
+fixtures:
+	go run bench/fixtures/generate.go bench/fixtures
+
 # Clean build artifacts
 clean:
 	rm -f $(BINARY)
 	rm -f cpu.prof mem.prof
 	rm -f benchmark_results.txt
-	rm -rf bench/fixtures/*
+	rm -f bench/fixtures/*.pdf
 
 # Tidy dependencies
 tidy:
