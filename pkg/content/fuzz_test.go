@@ -17,6 +17,14 @@ func FuzzMinHashSimilarity(f *testing.F) {
 		if s := MinHashSimilarity(a, a); s != 1 {
 			t.Fatalf("text against itself: %v, want 1", s)
 		}
+		sab, okab := Similarity(a, b)
+		sba, okba := Similarity(b, a)
+		if sab != sba || okab != okba {
+			t.Fatalf("Similarity not symmetric: %v,%v vs %v,%v", sab, okab, sba, okba)
+		}
+		if !okab && sab != 0 {
+			t.Fatalf("no estimate, yet similarity %v", sab)
+		}
 		if len(Shingles(a, DefaultShingleSize)) == 0 && len(Tokens(a)) != 0 {
 			t.Fatalf("tokens %q but no shingles", Tokens(a))
 		}
