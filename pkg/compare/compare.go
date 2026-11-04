@@ -518,22 +518,25 @@ func joinRenderErrors(errs []error) error {
 	case 1:
 		return errs[0]
 	}
-	return renderErrors(errs)
+	return &renderErrors{errs: errs}
 }
 
 // renderErrors is several render errors returned as one; errors.Is and
-// errors.As see each of them.
-type renderErrors []error
+// errors.As see each of them. It is used by pointer, as errors.Join's value
+// is, so callers can compare it or use it as a map key.
+type renderErrors struct {
+	errs []error
+}
 
-func (e renderErrors) Error() string {
-	msg := fmt.Sprintf("%d render errors occurred:", len(e))
-	for i, err := range e {
+func (e *renderErrors) Error() string {
+	msg := fmt.Sprintf("%d render errors occurred:", len(e.errs))
+	for i, err := range e.errs {
 		msg += fmt.Sprintf("\n  [%d] %v", i+1, err)
 	}
 	return msg
 }
 
-func (e renderErrors) Unwrap() []error { return e }
+func (e *renderErrors) Unwrap() []error { return e.errs }
 
 // scorePage scores one page (0-indexed pageNum) from its two renders: a
 // visual score, then the page's text folded in (see textAdjust).
@@ -749,9 +752,9 @@ type pageInfoPair struct {
 }
 
 // textSimilarity estimates how much text two pages share. It returns nil when
-// text hashing is off, when either page has no text or too little to
-// estimate (see content.MinShingles), or when the text is identical, so that
-// the exact-hash path decides.
+// text hashing is off, when either page has no text, when both have too
+// little to estimate (see content.MinShingles), or when the text is
+// identical, so that the exact-hash path decides.
 func (c *comparer) textSimilarity(info1, info2 render.PageInfo) *float64 {
 	if c.opts.TextHash == TextHashOff || info1.TextHash == 0 || info2.TextHash == 0 || info1.TextHash == info2.TextHash {
 		return nil

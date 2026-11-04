@@ -28,6 +28,9 @@ type fakeDoc struct {
 	rendered  atomic.Int32
 }
 
+// errBrokenPage is what a fakeDoc page in fail renders with.
+var errBrokenPage = errors.New("page is broken")
+
 func (d *fakeDoc) PageCount() int { return d.pages }
 
 func (d *fakeDoc) PageInfo(pageNum int) (render.PageInfo, error) {
@@ -36,7 +39,7 @@ func (d *fakeDoc) PageInfo(pageNum int) (render.PageInfo, error) {
 
 func (d *fakeDoc) RenderPage(ctx context.Context, pageNum int, opts render.Options) (image.Image, error) {
 	if d.fail[pageNum] {
-		return nil, fmt.Errorf("page %d is broken", pageNum)
+		return nil, fmt.Errorf("page %d: %w", pageNum, errBrokenPage)
 	}
 	time.Sleep(d.delay)
 	d.rendered.Add(1)
@@ -141,9 +144,13 @@ func TestComparePagesReturnsRenderErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), fmt.Sprintf("%d render errors occurred", n)) {
 		t.Errorf("error = %.120q, want all %d page errors reported", err, n)
 	}
-	var multi renderErrors
-	if !errors.As(err, &multi) || len(multi) != n {
-		t.Errorf("errors.As found %d errors, want %d", len(multi), n)
+	var multi *renderErrors
+	if !errors.As(err, &multi) || len(multi.errs) != n {
+		t.Fatalf("errors.As: want a renderErrors of %d errors, got %v", n, multi)
+	}
+	// The page errors sit inside the joined error: only Unwrap reaches them.
+	if !errors.Is(err, errBrokenPage) {
+		t.Error("errors.Is does not reach the page errors inside the joined error")
 	}
 }
 
