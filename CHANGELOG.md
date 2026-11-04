@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PageResult.TextSimilarity` (`text_similarity` in JSON) and `render.PageInfo.Text`.
 - `bench/content_matrix_test.go`, a text-change accuracy matrix, and `bench/simhash_test.go`, the MinHash-versus-SimHash comparison (`PDFCMP_MATRIX=1`).
 - `internal/fixtures`, so tests write the PDFs they need instead of skipping without them, and `make fixtures` for the benchmark set.
+- A CRAP gate: `make crap`, run before each commit by `.githooks/pre-commit` (`make hooks`).
 
 ### Changed
 - `Result.SimilarityScore` is now the lowest page similarity instead of the mean, so one changed page makes the documents different. `VisualComparison.OverallScore` keeps the mean.

@@ -1,0 +1,5 @@
+#!/bin/sh
+# CRAP gate: blocks the commit when any function's CRAP score is above the threshold in .crap.json.
+# Bypass once with: git commit --no-verify
+command=$(sed -n 's/.*"command"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' .crap.json)
+sh -c "$command"
