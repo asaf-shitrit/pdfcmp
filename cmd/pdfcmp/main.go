@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"runtime"
@@ -25,6 +26,7 @@ var (
 	workers   int
 	threshold float64
 	hashType  string
+	textHash  string
 	sampling  string
 	maxMemory int
 )
@@ -34,7 +36,7 @@ func main() {
 		Use:   "pdfcmp",
 		Short: "Lightning-fast PDF comparison engine with visual perception",
 		Long: `pdfcmp is a high-performance comparison tool and library that uses a
-multi-stage pipeline (byte-wise, structural, and visual) to detect
+multi-stage pipeline (byte-wise, text, and visual) to detect
 identical or similar PDF documents with extreme speed.`,
 	}
 
@@ -62,6 +64,7 @@ identical or similar PDF documents with extreme speed.`,
 	compareCmd.Flags().IntVarP(&workers, "workers", "w", runtime.NumCPU(), "Number of worker goroutines")
 	compareCmd.Flags().Float64VarP(&threshold, "threshold", "t", 0.95, "Similarity threshold (0.0 to 1.0)")
 	compareCmd.Flags().StringVar(&hashType, "hash", "both", "Hash type: dhash, phash, both")
+	compareCmd.Flags().StringVar(&textHash, "text-hash", "minhash", "Text similarity for pages whose text differs: minhash, off")
 	compareCmd.Flags().StringVar(&sampling, "sampling", "auto", "Sampling strategy: auto, all, strategic, thumbnail")
 	compareCmd.Flags().IntVar(&maxMemory, "memory", 512, "Max memory in MB")
 
@@ -90,163 +93,179 @@ identical or similar PDF documents with extreme speed.`,
 	}
 }
 
-func runCompare(cmd *cobra.Command, args []string) error {
-	pdf1, pdf2 := args[0], args[1]
-
-	// Validate files exist and are accessible
-	if err := validateFile(pdf1); err != nil {
-		return err
+// Flag values accepted by the compare command.
+var (
+	modes = map[string]compare.Mode{
+		"auto":   compare.ModeAuto,
+		"byte":   compare.ModeByte,
+		"visual": compare.ModeVisual,
+		"full":   compare.ModeFull,
 	}
-	if err := validateFile(pdf2); err != nil {
-		return err
+	hashTypes = map[string]compare.HashType{
+		"dhash": compare.HashDHash,
+		"phash": compare.HashPHash,
+		"both":  compare.HashBoth,
 	}
+	textHashes = map[string]compare.TextHashType{
+		"minhash": compare.TextMinHash,
+		"off":     compare.TextHashOff,
+	}
+	samplings = map[string]compare.SamplingStrategy{
+		"auto":      compare.SamplingAuto,
+		"all":       compare.SamplingAll,
+		"strategic": compare.SamplingStrategic,
+		"thumbnail": compare.SamplingThumbnailOnly,
+	}
+)
 
-	// Parse options
+// lookup returns the value a flag's name stands for in table, or an error
+// naming what kind of value was invalid.
+func lookup[T any](table map[string]T, name, kind string) (T, error) {
+	v, ok := table[name]
+	if !ok {
+		return v, fmt.Errorf("invalid %s: %s", kind, name)
+	}
+	return v, nil
+}
+
+// compareOptions turns the compare command's flags into comparer options.
+func compareOptions() ([]compare.Option, error) {
+	m, err := lookup(modes, mode, "mode")
+	if err != nil {
+		return nil, err
+	}
+	h, err := lookup(hashTypes, hashType, "hash type")
+	if err != nil {
+		return nil, err
+	}
+	th, err := lookup(textHashes, textHash, "text hash")
+	if err != nil {
+		return nil, err
+	}
+	smp, err := lookup(samplings, sampling, "sampling strategy")
+	if err != nil {
+		return nil, err
+	}
 	opts := []compare.Option{
 		compare.WithDPI(dpi),
 		compare.WithWorkers(workers),
 		compare.WithThreshold(threshold),
 		compare.WithMaxMemory(maxMemory),
+		compare.WithMode(m),
+		compare.WithHashType(h),
+		compare.WithTextHash(th),
+		compare.WithSampling(smp),
 	}
-
-	// Parse mode
-	switch mode {
-	case "auto":
-		opts = append(opts, compare.WithMode(compare.ModeAuto))
-	case "byte":
-		opts = append(opts, compare.WithMode(compare.ModeByte))
-	case "visual":
-		opts = append(opts, compare.WithMode(compare.ModeVisual))
-	case "full":
-		opts = append(opts, compare.WithMode(compare.ModeFull))
-	default:
-		return fmt.Errorf("invalid mode: %s", mode)
-	}
-
-	// Parse hash type
-	switch hashType {
-	case "dhash":
-		opts = append(opts, compare.WithHashType(compare.HashDHash))
-	case "phash":
-		opts = append(opts, compare.WithHashType(compare.HashPHash))
-	case "both":
-		opts = append(opts, compare.WithHashType(compare.HashBoth))
-	default:
-		return fmt.Errorf("invalid hash type: %s", hashType)
-	}
-
-	// Parse sampling
-	switch sampling {
-	case "auto":
-		opts = append(opts, compare.WithSampling(compare.SamplingAuto))
-	case "all":
-		opts = append(opts, compare.WithSampling(compare.SamplingAll))
-	case "strategic":
-		opts = append(opts, compare.WithSampling(compare.SamplingStrategic))
-	case "thumbnail":
-		opts = append(opts, compare.WithSampling(compare.SamplingThumbnailOnly))
-	default:
-		return fmt.Errorf("invalid sampling strategy: %s", sampling)
-	}
-
-	// Add progress callback if verbose
-	if verbose && !quiet {
+	if showProgress() {
 		opts = append(opts, compare.WithProgress(func(p compare.Progress) {
 			fmt.Fprintf(os.Stderr, "\r%s: %d/%d (%.0f%%)", p.Stage, p.CurrentPage, p.TotalPages, p.Percent*100)
 		}))
 	}
+	return opts, nil
+}
 
-	// Create comparer
+func showProgress() bool { return verbose && !quiet }
+
+func runCompare(cmd *cobra.Command, args []string) error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	result, err := compareFiles(ctx, args[0], args[1])
+	if err != nil {
+		return err
+	}
+	if err := writeResult(os.Stdout, result); err != nil {
+		return err
+	}
+	// Exit with code 1 if files are different
+	if !result.IsSimilar(threshold) {
+		os.Exit(1)
+	}
+	return nil
+}
+
+// compareFiles compares two PDFs with the options set by the command's flags.
+func compareFiles(ctx context.Context, pdf1, pdf2 string) (*compare.Result, error) {
+	if err := validateFiles(pdf1, pdf2); err != nil {
+		return nil, err
+	}
+	opts, err := compareOptions()
+	if err != nil {
+		return nil, err
+	}
 	cmp, err := compare.New(opts...)
 	if err != nil {
-		return fmt.Errorf("failed to create comparer: %w", err)
+		return nil, fmt.Errorf("failed to create comparer: %w", err)
 	}
 	defer cmp.Close()
 
-	// Setup context with cancellation
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	// Handle interrupt
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
-	go func() {
-		<-sigCh
-		cancel()
-	}()
-
-	// Run comparison
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "Comparing %s and %s...\n", pdf1, pdf2)
 	}
-
 	result, err := cmp.Compare(ctx, pdf1, pdf2)
+	if showProgress() {
+		fmt.Fprintln(os.Stderr) // end the progress line
+	}
 	if err != nil {
-		return fmt.Errorf("comparison failed: %w", err)
+		return nil, fmt.Errorf("comparison failed: %w", err)
 	}
+	return result, nil
+}
 
-	// Clear progress line
-	if verbose && !quiet {
-		fmt.Fprintln(os.Stderr)
+// writeResult writes a comparison result as JSON or as a text summary,
+// depending on the --format flag.
+func writeResult(w io.Writer, result *compare.Result) error {
+	if format == "json" {
+		jsonStr, err := result.JSON()
+		if err != nil {
+			return err
+		}
+		_, err = fmt.Fprintln(w, jsonStr)
+		return err
 	}
-
-	// Output result
-	return outputResult(result)
+	_, err := fmt.Fprint(w, result.Summary())
+	return err
 }
 
 func runQuick(cmd *cobra.Command, args []string) error {
-	pdf1, pdf2 := args[0], args[1]
+	return quickCompare(os.Stdout, args[0], args[1])
+}
 
-	// Validate files exist and are accessible
-	if err := validateFile(pdf1); err != nil {
+// quickCompare compares two files byte for byte and writes whether they are
+// identical, as JSON or as text depending on the --format flag.
+func quickCompare(w io.Writer, pdf1, pdf2 string) error {
+	if err := validateFiles(pdf1, pdf2); err != nil {
 		return err
 	}
-	if err := validateFile(pdf2); err != nil {
-		return err
-	}
-
 	identical, err := compare.Quick(pdf1, pdf2)
 	if err != nil {
 		return fmt.Errorf("comparison failed: %w", err)
 	}
 
 	if format == "json" {
-		output := map[string]interface{}{
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(map[string]any{
 			"identical": identical,
 			"file1":     pdf1,
 			"file2":     pdf2,
-		}
-		enc := json.NewEncoder(os.Stdout)
-		enc.SetIndent("", "  ")
-		return enc.Encode(output)
+		})
 	}
-
+	verdict := "DIFFERENT: Files differ"
 	if identical {
-		fmt.Println("IDENTICAL: Files are byte-for-byte identical")
-	} else {
-		fmt.Println("DIFFERENT: Files differ")
+		verdict = "IDENTICAL: Files are byte-for-byte identical"
 	}
-
-	return nil
+	_, err = fmt.Fprintln(w, verdict)
+	return err
 }
 
-func outputResult(result *compare.Result) error {
-	switch format {
-	case "json":
-		jsonStr, err := result.JSON()
-		if err != nil {
+// validateFiles validates each path with validateFile.
+func validateFiles(paths ...string) error {
+	for _, p := range paths {
+		if err := validateFile(p); err != nil {
 			return err
 		}
-		fmt.Println(jsonStr)
-	default:
-		fmt.Print(result.Summary())
 	}
-
-	// Exit with code 1 if files are different
-	if !result.Identical && result.SimilarityScore < threshold {
-		os.Exit(1)
-	}
-
 	return nil
 }
 
