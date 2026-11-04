@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- Text similarity for pages whose text differs: 128-slot MinHash signatures of word 3-shingles, in the new `pkg/content` package. The estimate caps the page's similarity, so a page rewritten in the same layout is no longer scored by its perceptual hashes alone.
+- Text similarity for pages whose text differs: 128-slot MinHash signatures of word 3-shingles, in the new `pkg/content` package. The estimate caps the page's similarity, so a page rewritten in the same layout is no longer scored by its perceptual hashes alone. Pages with fewer than 60 distinct shingles (about six lines) are left to the visual score: on short text one changed word moves the Jaccard similarity by more than 10%.
 - `WithTextHash` option and `--text-hash minhash|off` flag.
 - `PageResult.TextSimilarity` (`text_similarity` in JSON) and `render.PageInfo.Text`.
 - `bench/content_matrix_test.go`, a text-change accuracy matrix, and `bench/simhash_test.go`, the MinHash-versus-SimHash comparison (`PDFCMP_MATRIX=1`).
@@ -18,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - `Result.SimilarityScore` is now the lowest page similarity instead of the mean, so one changed page makes the documents different. `VisualComparison.OverallScore` keeps the mean.
 - A sample with any page below the threshold no longer triggers the full comparison; the documents are already different.
+- The thumbnail stage exits early when either thumbnail scores below 0.5, not when their mean does. The result then lists only the thumbnail pages.
+- When one document's render stream fails outright, the other stops rendering instead of finishing every page.
 - Page metadata is read once per page before rendering instead of again inside each hashing worker.
 
 ### Fixed

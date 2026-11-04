@@ -15,7 +15,7 @@ The tool follows a layered approach to avoid heavy rendering whenever possible. 
     *   **Histogram Pre-check**: Calculates RGB histograms to reject major color differences instantly (2x faster than hashing).
     *   **Low-Res Render**: Renders first and last pages at 72 DPI for perceptual analysis.
 4.  **Text Fingerprinting**: Extracts each page's text and compares its hash. Identical text content with similar layout boosts confidence significantly.
-5.  **Text Similarity**: When the text differs, a MinHash signature of its word 3-shingles estimates how much of it the two pages share, and that caps the page's score. Perceptual hashes see where text sits, not what it says, so without this a page rewritten in the same layout still scores 81-89% visually similar.
+5.  **Text Similarity**: When the text differs, a MinHash signature of its word 3-shingles estimates how much of it the two pages share, and that caps the page's score. Perceptual hashes see where text sits, not what it says, so without this a page rewritten in the same layout still scores 81-89% visually similar. Pages with fewer than 60 distinct shingles, about six lines, keep their visual score: on short text a single changed word would move the estimate by more than 10%.
 6.  **Strategic Sampling**: For long documents, it analyzes a subset of pages ($\sqrt{n} + 2$) to estimate similarity.
 7.  **Full Analysis**: If needed, it performs a complete page-by-page comparison using perceptual hashing (dHash and pHash).
 
