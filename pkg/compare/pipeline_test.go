@@ -141,15 +141,23 @@ func TestComparePagesReturnsRenderErrors(t *testing.T) {
 	if !strings.Contains(err.Error(), fmt.Sprintf("%d render errors occurred", n)) {
 		t.Errorf("error = %.120q, want all %d page errors reported", err, n)
 	}
+	var multi renderErrors
+	if !errors.As(err, &multi) || len(multi) != n {
+		t.Errorf("errors.As found %d errors, want %d", len(multi), n)
+	}
 }
 
 func TestComparePagesStopsTheOtherStreamOnFailure(t *testing.T) {
 	const n = 200
+	errOpen := errors.New("cannot open")
 	slow := &fakeDoc{pages: n, delay: time.Millisecond}
-	broken := &fakeDoc{pages: n, streamErr: errors.New("cannot open")}
+	broken := &fakeDoc{pages: n, streamErr: errOpen}
 	_, err := runComparePages(t, context.Background(), slow, broken, allPageNums(n))
-	if err == nil || !strings.Contains(err.Error(), "doc2 render failed: cannot open") {
-		t.Fatalf("err = %.120q, want doc2's stream error", err)
+	if !errors.Is(err, errOpen) {
+		t.Fatalf("err = %v, want it to wrap doc2's stream error", err)
+	}
+	if strings.Contains(err.Error(), "context canceled") {
+		t.Errorf("err = %q, want no errors for pages cancelled because doc2 failed", err)
 	}
 	if got := slow.rendered.Load(); got >= n/2 {
 		t.Errorf("doc1 rendered %d of %d pages after doc2 failed, want it stopped early", got, n)

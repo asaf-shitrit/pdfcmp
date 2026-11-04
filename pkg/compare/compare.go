@@ -8,6 +8,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 	"time"
 
@@ -451,6 +452,11 @@ func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, 
 	for err := range streamErrCh {
 		errs = append(errs, err)
 	}
+	if renderCtx.Err() != nil {
+		// The caller did not cancel, so a failed stream did: the other
+		// document's cancelled pages are not errors of their own.
+		pageErrs = slices.DeleteFunc(pageErrs, func(err error) bool { return errors.Is(err, context.Canceled) })
+	}
 	return joinRenderErrors(append(errs, pageErrs...))
 }
 
@@ -512,12 +518,22 @@ func joinRenderErrors(errs []error) error {
 	case 1:
 		return errs[0]
 	}
-	msg := fmt.Sprintf("%d render errors occurred:", len(errs))
-	for i, err := range errs {
+	return renderErrors(errs)
+}
+
+// renderErrors is several render errors returned as one; errors.Is and
+// errors.As see each of them.
+type renderErrors []error
+
+func (e renderErrors) Error() string {
+	msg := fmt.Sprintf("%d render errors occurred:", len(e))
+	for i, err := range e {
 		msg += fmt.Sprintf("\n  [%d] %v", i+1, err)
 	}
-	return errors.New(msg)
+	return msg
 }
+
+func (e renderErrors) Unwrap() []error { return e }
 
 // scorePage scores one page (0-indexed pageNum) from its two renders: a
 // visual score, then the page's text folded in (see textAdjust).
