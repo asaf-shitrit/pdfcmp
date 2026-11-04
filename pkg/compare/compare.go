@@ -212,13 +212,13 @@ func (c *comparer) pageCountStage(result *Result, doc1, doc2 render.Document) bo
 		c.opts.Logger.Debug("Both PDFs have 0 pages, treating as identical")
 		result.setIdentical("empty documents")
 		return true
+	case n1 == 0 || n2 == 0:
+		c.opts.Logger.Debug("One PDF has 0 pages", F("pages1", n1), F("pages2", n2))
+		result.setMismatch("empty document mismatch")
+		return true
 	case n1 != n2:
 		c.opts.Logger.Debug("Page counts differ", F("pages1", n1), F("pages2", n2))
-		result.SimilarityScore = 0.0
-		result.VisualComparison = VisualResult{
-			OverallScore:     0.0,
-			SamplingStrategy: "page count mismatch",
-		}
+		result.setMismatch("page count mismatch")
 		return true
 	}
 	return false
@@ -251,10 +251,8 @@ func (c *comparer) thumbnailStage(ctx context.Context, result *Result, doc1, doc
 	return false, nil
 }
 
-// sampleStage compares a sample of pages, then every page when the whole
-// sample is similar and sampling left pages out. One sampled page below the
-// threshold already makes the documents different, so only an all-similar
-// sample earns the full comparison.
+// sampleStage compares a sample of pages, then every page when needsFullScan
+// says the sample cannot decide.
 func (c *comparer) sampleStage(ctx context.Context, result *Result, doc1, doc2 render.Document) error {
 	pageCount := doc1.PageCount()
 	pages, strategy := c.samplePages(pageCount)
@@ -267,9 +265,7 @@ func (c *comparer) sampleStage(ctx context.Context, result *Result, doc1, doc2 r
 		return fmt.Errorf("sample comparison failed: %w", err)
 	}
 
-	full := worstSimilarity(results) >= c.opts.SimilarityThreshold &&
-		c.opts.Sampling == SamplingAuto && len(pages) < pageCount
-	if !full {
+	if !c.needsFullScan(results, pageCount) {
 		result.setPages(results, strategy, c.opts.HashType, c.opts.DPI)
 		return nil
 	}
@@ -282,6 +278,14 @@ func (c *comparer) sampleStage(ctx context.Context, result *Result, doc1, doc2 r
 	}
 	result.setPages(results, "full", c.opts.HashType, c.opts.DPI)
 	return nil
+}
+
+// needsFullScan reports whether a sample leaves the comparison open: sampling
+// is automatic, it left pages out, and every sampled page is similar. One
+// sampled page below the threshold already makes the documents different.
+func (c *comparer) needsFullScan(sample []PageResult, pageCount int) bool {
+	return c.opts.Sampling == SamplingAuto && len(sample) < pageCount &&
+		worstSimilarity(sample) >= c.opts.SimilarityThreshold
 }
 
 // samplePages returns the pages the sample stage compares and the name of
@@ -372,12 +376,18 @@ func textDecides(info1, info2 render.PageInfo) bool {
 // page's two renders as soon as both are ready, from up to the
 // memory-adjusted worker count of goroutines at once. j is the page's index
 // in pageNums. A page that fails to render in either document is not scored;
-// the errors are returned together once every page is done.
+// the errors are returned together once every page is done. When one
+// document's stream fails outright, the other stops rendering too.
+//
+// Memory is not bounded: a render waits in the pairer until the other
+// document's render of the same page arrives, so a document that renders
+// much faster can hold most of its pages there.
 func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, pageNums []int, opts render.Options, score func(j int, img1, img2 image.Image)) error {
 	workers := c.adjustWorkersForMemory(doc1)
-	// Twice the workers lets rendering run ahead of scoring without
-	// unbounded memory growth.
+	// Twice the workers lets rendering run ahead of scoring.
 	bufferSize := min(workers*2, len(pageNums))
+	renderCtx, stopRendering := context.WithCancel(ctx)
+	defer stopRendering()
 	pairer := &pagePairer{renders: map[int]*[2]image.Image{}, jobs: make(chan int, bufferSize)}
 
 	// Page errors are collected while the pipeline runs, so a page that fails
@@ -397,8 +407,9 @@ func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, 
 	for d, doc := range []render.Document{doc1, doc2} {
 		out := make(chan render.RenderedPage, bufferSize)
 		go func() {
-			if err := doc.RenderPagesStream(ctx, pageNums, opts, out); err != nil {
+			if err := doc.RenderPagesStream(renderCtx, pageNums, opts, out); err != nil {
 				streamErrCh <- fmt.Errorf("doc%d render failed: %w", d+1, err)
+				stopRendering() // the other document's pages can no longer be scored
 			}
 			close(out)
 		}()
@@ -590,6 +601,15 @@ func (r *Result) setIdentical(strategy string) {
 	}
 }
 
+// setMismatch records documents found different without comparing pages.
+func (r *Result) setMismatch(strategy string) {
+	r.SimilarityScore = 0.0
+	r.VisualComparison = VisualResult{
+		OverallScore:     0.0,
+		SamplingStrategy: strategy,
+	}
+}
+
 // setPages records the compared pages. The documents score as their least
 // similar page; the visual result keeps the mean.
 func (r *Result) setPages(pages []PageResult, strategy string, hashType HashType, dpi int) {
@@ -713,13 +733,17 @@ type pageInfoPair struct {
 }
 
 // textSimilarity estimates how much text two pages share. It returns nil when
-// text hashing is off, when either page has no text, or when the text is
-// identical, so that the exact-hash path above decides.
+// text hashing is off, when either page has no text or too little to
+// estimate (see content.MinShingles), or when the text is identical, so that
+// the exact-hash path decides.
 func (c *comparer) textSimilarity(info1, info2 render.PageInfo) *float64 {
 	if c.opts.TextHash == TextHashOff || info1.TextHash == 0 || info2.TextHash == 0 || info1.TextHash == info2.TextHash {
 		return nil
 	}
-	s := content.MinHashSimilarity(info1.Text, info2.Text)
+	s, ok := content.Similarity(info1.Text, info2.Text)
+	if !ok {
+		return nil
+	}
 	return &s
 }
 

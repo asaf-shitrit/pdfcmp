@@ -8,17 +8,24 @@ import (
 	"image/color"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/asafshitrit/pdfcmp/pkg/render"
 )
 
-// fakeDoc is a render.Document whose pages render as a flat grey image, or
-// fail for the page numbers in fail.
+// fakeDoc is a render.Document whose pages render as a flat grey image. Pages
+// in blank render black instead, pages in fail fail to render, and a non-nil
+// streamErr makes RenderPagesStream fail before sending anything. Each page
+// takes delay to render; rendered counts the pages rendered.
 type fakeDoc struct {
-	pages int
-	fail  map[int]bool
+	pages     int
+	fail      map[int]bool
+	blank     map[int]bool
+	streamErr error
+	delay     time.Duration
+	rendered  atomic.Int32
 }
 
 func (d *fakeDoc) PageCount() int { return d.pages }
@@ -31,7 +38,12 @@ func (d *fakeDoc) RenderPage(ctx context.Context, pageNum int, opts render.Optio
 	if d.fail[pageNum] {
 		return nil, fmt.Errorf("page %d is broken", pageNum)
 	}
+	time.Sleep(d.delay)
+	d.rendered.Add(1)
 	img := image.NewGray(image.Rect(0, 0, 32, 32))
+	if d.blank[pageNum] {
+		return img, nil
+	}
 	for i := range img.Pix {
 		img.Pix[i] = 128
 	}
@@ -52,6 +64,9 @@ func (d *fakeDoc) RenderPages(ctx context.Context, pageNums []int, opts render.O
 }
 
 func (d *fakeDoc) RenderPagesStream(ctx context.Context, pageNums []int, opts render.Options, out chan<- render.RenderedPage) error {
+	if d.streamErr != nil {
+		return d.streamErr
+	}
 	for i, p := range pageNums {
 		if err := ctx.Err(); err != nil {
 			out <- render.RenderedPage{Index: i, Err: err}
@@ -125,6 +140,19 @@ func TestComparePagesReturnsRenderErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), fmt.Sprintf("%d render errors occurred", n)) {
 		t.Errorf("error = %.120q, want all %d page errors reported", err, n)
+	}
+}
+
+func TestComparePagesStopsTheOtherStreamOnFailure(t *testing.T) {
+	const n = 200
+	slow := &fakeDoc{pages: n, delay: time.Millisecond}
+	broken := &fakeDoc{pages: n, streamErr: errors.New("cannot open")}
+	_, err := runComparePages(t, context.Background(), slow, broken, allPageNums(n))
+	if err == nil || !strings.Contains(err.Error(), "doc2 render failed: cannot open") {
+		t.Fatalf("err = %.120q, want doc2's stream error", err)
+	}
+	if got := slow.rendered.Load(); got >= n/2 {
+		t.Errorf("doc1 rendered %d of %d pages after doc2 failed, want it stopped early", got, n)
 	}
 }
 

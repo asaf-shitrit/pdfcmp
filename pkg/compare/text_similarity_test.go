@@ -74,16 +74,21 @@ func TestRewrittenPageInSameLayout(t *testing.T) {
 			if res.IsSimilar(DefaultSimilarityThreshold) {
 				t.Errorf("rewritten page passed: similarity %.4f", res.SimilarityScore)
 			}
-			for _, pr := range res.PageResults {
-				if pr.Page != 3 {
-					continue
+			page3 := slices.IndexFunc(res.PageResults, func(pr PageResult) bool { return pr.Page == 3 })
+			if page3 < 0 {
+				t.Fatalf("page 3 was not compared; pages: %d", len(res.PageResults))
+			}
+			pr := res.PageResults[page3]
+			if tc.th == TextHashOff {
+				if pr.TextSimilarity != nil {
+					t.Errorf("text hash off: page 3 text similarity = %s, want nil", fmtSim(pr.TextSimilarity))
 				}
-				if tc.th == TextHashOff {
-					if pr.TextSimilarity != nil {
-						t.Errorf("text hash off: page 3 text similarity = %s, want nil", fmtSim(pr.TextSimilarity))
-					}
-				} else if pr.TextSimilarity == nil || *pr.TextSimilarity > 0.1 {
+			} else {
+				if pr.TextSimilarity == nil || *pr.TextSimilarity > 0.1 {
 					t.Errorf("page 3 text similarity = %s, want at most 0.10", fmtSim(pr.TextSimilarity))
+				}
+				if pr.TextSimilarity != nil && pr.Similarity > *pr.TextSimilarity {
+					t.Errorf("page 3 similarity %.4f is above its text similarity %.4f", pr.Similarity, *pr.TextSimilarity)
 				}
 			}
 
@@ -101,10 +106,23 @@ func TestRewrittenPageInSameLayout(t *testing.T) {
 	}
 }
 
+// longText returns n distinct words, enough shingles for an estimate.
+func longText(n int) []string {
+	words := make([]string, n)
+	for i := range words {
+		words[i] = fmt.Sprintf("word%d", i)
+	}
+	return words
+}
+
 func TestTextSimilarityOnlyWhenTextDiffers(t *testing.T) {
-	a := render.PageInfo{TextHash: 1, Text: "alpha beta gamma delta"}
-	b := render.PageInfo{TextHash: 2, Text: "alpha beta gamma epsilon"}
+	words := longText(100)
+	a := render.PageInfo{TextHash: 1, Text: strings.Join(words, " ")}
+	words[50] = "changed"
+	b := render.PageInfo{TextHash: 2, Text: strings.Join(words, " ")}
 	none := render.PageInfo{}
+	shortA := render.PageInfo{TextHash: 3, Text: "Annual Report 2025"}
+	shortB := render.PageInfo{TextHash: 4, Text: "Annual Report 2026"}
 
 	c := &comparer{opts: DefaultOptions()}
 	if c.textSimilarity(a, a) != nil {
@@ -113,8 +131,11 @@ func TestTextSimilarityOnlyWhenTextDiffers(t *testing.T) {
 	if c.textSimilarity(a, none) != nil {
 		t.Error("page without text: want nil")
 	}
-	if s := c.textSimilarity(a, b); s == nil || *s <= 0 || *s >= 1 {
-		t.Errorf("one word of four changed: got %v, want strictly between 0 and 1", s)
+	if c.textSimilarity(shortA, shortB) != nil {
+		t.Error("three-word pages: want nil, too short to estimate")
+	}
+	if s := c.textSimilarity(a, b); s == nil || *s <= 0.8 || *s >= 1 {
+		t.Errorf("one word of 100 changed: got %s, want between 0.8 and 1", fmtSim(s))
 	}
 
 	c.opts.TextHash = TextHashOff

@@ -116,3 +116,25 @@ func BenchmarkShinglesPage(b *testing.B) {
 		_ = Shingles(text, DefaultShingleSize)
 	}
 }
+
+func TestSimilarityNeedsEnoughShingles(t *testing.T) {
+	if _, ok := Similarity("Annual Report 2025", "Annual Report 2026"); ok {
+		t.Error("three-word title: want no estimate")
+	}
+
+	long := strings.Join(words(7, MinShingles+2), " ") // MinShingles distinct shingles
+	other := strings.Fields(long)
+	other[0] = "changed"
+	s, ok := Similarity(long, strings.Join(other, " "))
+	if !ok {
+		t.Fatalf("%d-token text: want an estimate", MinShingles+2)
+	}
+	if want := MinHashSimilarity(long, strings.Join(other, " ")); s != want {
+		t.Errorf("Similarity = %v, want MinHashSimilarity's %v", s, want)
+	}
+
+	repeated := strings.Repeat("same three words ", 100)
+	if _, ok := Similarity(repeated, repeated+" more"); ok {
+		t.Error("100 repeats of one phrase: want no estimate, it has few distinct shingles")
+	}
+}
