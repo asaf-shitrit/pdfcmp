@@ -6,9 +6,11 @@ package fixtures
 
 import (
 	"fmt"
+	"hash/fnv"
 	"io"
 	"math/rand"
 	"path/filepath"
+	"time"
 
 	"github.com/jung-kurt/gofpdf"
 )
@@ -16,11 +18,21 @@ import (
 // textLines is the number of seeded lines on a text page.
 const textLines = 10
 
-// newPDF returns an A4 document that never breaks pages on its own, so each
-// AddPage is exactly one page, footer included.
-func newPDF() *gofpdf.Fpdf {
+// newPDF returns an A4 document for path that never breaks pages on its own,
+// so each AddPage is exactly one page, footer included. Its creation and
+// modification dates come from the file name, so two files with the same
+// content but different names always differ in their bytes, and comparing
+// them cannot stop at the byte check. (gofpdf writes font resources in map
+// order, so a file is not byte-for-byte reproducible either way.)
+func newPDF(path string) *gofpdf.Fpdf {
 	pdf := gofpdf.New("P", "mm", "A4", "")
 	pdf.SetAutoPageBreak(false, 0)
+	h := fnv.New32a()
+	h.Write([]byte(filepath.Base(path)))
+	offset := time.Duration(h.Sum32()%(365*24*60*60)) * time.Second
+	date := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC).Add(offset)
+	pdf.SetCreationDate(date)
+	pdf.SetModificationDate(date) // gofpdf otherwise writes the current time
 	return pdf
 }
 
@@ -35,7 +47,7 @@ func Text(path string, pages int, title string, seed int64) error {
 // no page is modified.
 func Modified(path string, pages int, title string, seed int64, modified int) error {
 	rng := rand.New(rand.NewSource(seed))
-	pdf := newPDF()
+	pdf := newPDF(path)
 	for i := 1; i <= pages; i++ {
 		pdf.AddPage()
 		if i == modified {
@@ -85,7 +97,7 @@ func footer(pdf *gofpdf.Fpdf, page, pages int) {
 // heading, with a footer.
 func Graphic(path string, pages int, seed int64) error {
 	rng := rand.New(rand.NewSource(seed))
-	pdf := newPDF()
+	pdf := newPDF(path)
 	for i := 1; i <= pages; i++ {
 		pdf.AddPage()
 		pdf.SetFont("Arial", "B", 16)
@@ -127,7 +139,7 @@ func lines(pdf *gofpdf.Fpdf, rng *rand.Rand) {
 // footer or ten coloured rectangles with no text at all.
 func Mixed(path string, pages int, seed int64) error {
 	rng := rand.New(rand.NewSource(seed))
-	pdf := newPDF()
+	pdf := newPDF(path)
 	for i := 1; i <= pages; i++ {
 		pdf.AddPage()
 		if rng.Intn(2) == 0 {
@@ -165,7 +177,7 @@ func rectangles(pdf *gofpdf.Fpdf, rng *rand.Rand) {
 // ImageOnly writes pages of seeded circles and no text, like a scan.
 func ImageOnly(path string, pages int, seed int64) error {
 	rng := rand.New(rand.NewSource(seed))
-	pdf := newPDF()
+	pdf := newPDF(path)
 	for i := 1; i <= pages; i++ {
 		pdf.AddPage()
 		for j := 0; j < 20; j++ {

@@ -1,7 +1,9 @@
 package fixtures
 
 import (
+	"bytes"
 	"io"
+	"os"
 	"testing"
 
 	"github.com/asafshitrit/pdfcmp/pkg/render"
@@ -53,6 +55,29 @@ func TestGenerate(t *testing.T) {
 	for p := range a {
 		if differs := a[p] != m[p]; differs != (p+1 == 10) {
 			t.Errorf("medium_modified page %d: differs = %v, want %v", p+1, differs, p+1 == 10)
+		}
+	}
+}
+
+// Same content, different names: the bytes must differ, or a comparison of
+// the pair would stop at the byte check without rendering.
+func TestSameContentPairsDifferInBytes(t *testing.T) {
+	dir := t.TempDir()
+	read := func(name string) []byte {
+		s, _ := Find(name)
+		path, err := s.Write(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	for _, pair := range [][2]string{{"small_a.pdf", "small_b.pdf"}, {"graphic_a.pdf", "graphic_b.pdf"}, {"scanned_a.pdf", "scanned_b.pdf"}, {"mixed_a.pdf", "mixed_b.pdf"}} {
+		if bytes.Equal(read(pair[0]), read(pair[1])) {
+			t.Errorf("%s and %s are byte-identical", pair[0], pair[1])
 		}
 	}
 }

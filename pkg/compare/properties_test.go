@@ -44,6 +44,9 @@ func TestProperties(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Compare failed: %v", err)
 			}
+			if pair[0] != pair[1] && res.ByteComparison.Identical {
+				t.Fatal("the files are byte-identical, so nothing was rendered")
+			}
 			if res.SimilarityScore < 0.999 {
 				t.Errorf("similarity %f, want at least 0.999", res.SimilarityScore)
 			}
