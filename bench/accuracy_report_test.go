@@ -19,7 +19,7 @@ import (
 func TestAccuracyReport(t *testing.T) {
 	// 1. Create Base Image (High details)
 	baseImg := createDetailedImage(500, 500)
-	
+
 	// Define transformations
 	tests := []struct {
 		name      string
@@ -27,19 +27,19 @@ func TestAccuracyReport(t *testing.T) {
 		minScore  float64 // Expected minimum similarity
 	}{
 		{
-			name: "Identical", 
+			name:      "Identical",
 			transform: func(img image.Image) image.Image { return img },
-			minScore: 1.0,
+			minScore:  1.0,
 		},
 		{
-			name: "Shift_1px",
+			name:      "Shift_1px",
 			transform: func(img image.Image) image.Image { return shiftImage(img, 1, 1) },
-			minScore: 0.90,
+			minScore:  0.90,
 		},
 		{
-			name: "Shift_5px",
+			name:      "Shift_5px",
 			transform: func(img image.Image) image.Image { return shiftImage(img, 5, 5) },
-			minScore: 0.70, // dHash is sensitive to alignment
+			minScore:  0.70, // dHash is sensitive to alignment
 		},
 		{
 			name: "Resize_90%",
@@ -49,19 +49,19 @@ func TestAccuracyReport(t *testing.T) {
 			minScore: 0.95, // pHash should handle scaling well
 		},
 		{
-			name: "Noise_5%",
+			name:      "Noise_5%",
 			transform: func(img image.Image) image.Image { return addNoise(img, 0.05) },
-			minScore: 0.90,
+			minScore:  0.90,
 		},
 		{
-			name: "Brightness_+10%",
+			name:      "Brightness_+10%",
 			transform: func(img image.Image) image.Image { return adjustBrightness(img, 1.1) },
-			minScore: 0.95,
+			minScore:  0.95,
 		},
 		{
-			name: "Crop_Center",
+			name:      "Crop_Center",
 			transform: func(img image.Image) image.Image { return cropImage(img, 10) },
-			minScore: 0.80,
+			minScore:  0.80,
 		},
 	}
 
@@ -76,10 +76,10 @@ func TestAccuracyReport(t *testing.T) {
 		// Calculate Metrics
 		d1, d2, dDist := visual.ComputeDHashPair(baseImg, modImg)
 		p1, p2, pDist := visual.ComputePHashPair(baseImg, modImg)
-		
+
 		dSim := visual.Similarity(dDist)
 		pSim := visual.Similarity(pDist)
-		
+
 		// Use manual combination for transparency in report
 		combSim := visual.CombinedSimilarity(d1, d2, p1, p2)
 
@@ -94,7 +94,7 @@ func TestAccuracyReport(t *testing.T) {
 			status = "❌"
 		}
 
-		fmt.Fprintf(w, "%s\t%.4f\t%.4f\t%.4f\t%.4f\t%s\n", 
+		fmt.Fprintf(w, "%s\t%.4f\t%.4f\t%.4f\t%.4f\t%s\n",
 			tc.name, dSim, pSim, combSim, hSim, status)
 	}
 	w.Flush()
@@ -132,11 +132,11 @@ func shiftImage(img image.Image, dx, dy int) image.Image {
 func addNoise(img image.Image, factor float64) image.Image {
 	// Use a fixed seed for reproducible noise in benchmarks
 	r := rand.New(rand.NewSource(42))
-	
+
 	b := img.Bounds()
 	newImg := image.NewRGBA(b)
 	draw.Draw(newImg, b, img, b.Min, draw.Src)
-	
+
 	limit := int(float64(b.Dx()*b.Dy()) * factor)
 	for i := 0; i < limit; i++ {
 		x := r.Intn(b.Dx())
