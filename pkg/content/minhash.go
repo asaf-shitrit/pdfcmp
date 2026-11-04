@@ -55,8 +55,8 @@ func MinHashSimilarity(text1, text2 string) float64 {
 	return m1.Similarity(&m2)
 }
 
-// MinShingles is the fewest distinct shingles a text needs before its
-// similarity is worth estimating. One changed token removes up to three
+// MinShingles is the fewest distinct shingles one of two texts needs before
+// their similarity is worth estimating. One changed token removes up to three
 // shingles: at 60 that costs 9% (Jaccard 57/63), and on shorter text more,
 // so "Annual Report 2025" against "Annual Report 2026" shares no shingle at
 // all. Below it, a score says more about the page's length than about how
@@ -64,12 +64,13 @@ func MinHashSimilarity(text1, text2 string) float64 {
 const MinShingles = 60
 
 // Similarity estimates how much text two pages share, as MinHashSimilarity
-// does. ok is false when either text has fewer than MinShingles distinct
-// shingles.
+// does. ok is false when both texts have fewer than MinShingles distinct
+// shingles. When only one does, a low estimate is real: most of the longer
+// text is gone.
 func Similarity(text1, text2 string) (s float64, ok bool) {
 	s1 := Shingles(text1, DefaultShingleSize)
 	s2 := Shingles(text2, DefaultShingleSize)
-	if distinct(s1) < MinShingles || distinct(s2) < MinShingles {
+	if distinct(s1) < MinShingles && distinct(s2) < MinShingles {
 		return 0, false
 	}
 	m1, m2 := NewMinHash(s1), NewMinHash(s2)
