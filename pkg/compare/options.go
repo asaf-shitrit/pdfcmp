@@ -101,6 +101,11 @@ type Options struct {
 	// TextChange specifies whether changed page text makes the documents different
 	TextChange TextChangeMode
 
+	// Tiles scores each rendered page by its worst tile as well as by its
+	// perceptual hashes, so a small local edit is not lost in the whole-page
+	// hash (default: true)
+	Tiles bool
+
 	// DPI for rendering pages (default: 150)
 	DPI int
 
@@ -138,6 +143,7 @@ func DefaultOptions() Options {
 		HashType:            HashBoth,
 		TextHash:            TextMinHash,
 		TextChange:          TextChangeFails,
+		Tiles:               true,
 		DPI:                 render.DPIStandard,
 		Workers:             runtime.NumCPU(),
 		SimilarityThreshold: DefaultSimilarityThreshold,
@@ -175,6 +181,13 @@ func WithTextHash(t TextHashType) Option {
 func WithTextChange(m TextChangeMode) Option {
 	return func(o *Options) {
 		o.TextChange = m
+	}
+}
+
+// WithTiles sets whether pages are also scored by their worst tile
+func WithTiles(on bool) Option {
+	return func(o *Options) {
+		o.Tiles = on
 	}
 }
 

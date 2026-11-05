@@ -92,6 +92,7 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 		},
 		ComparisonLayers: []string{},
 		textMode:         c.opts.TextChange,
+		tiles:            c.opts.Tiles,
 	}
 	if err := c.runStages(ctx, result, pdf1, pdf2); err != nil {
 		return nil, err
@@ -301,11 +302,23 @@ func (c *comparer) sampleStage(ctx context.Context, result *Result, doc1, doc2 r
 // needsFullScan reports whether a sample leaves the comparison open: sampling
 // is automatic, it left pages out, and every sampled page is similar. One
 // sampled page below the threshold already makes the documents different,
-// and so does one whose text changed, unless TextChangeScored is set.
+// and so does one whose text changed, unless TextChangeScored is set, or one
+// whose tile changed, when tiles are on.
 func (c *comparer) needsFullScan(sample []PageResult, pageCount int) bool {
 	return c.opts.Sampling == SamplingAuto && len(sample) < pageCount &&
 		worstSimilarity(sample) >= c.opts.SimilarityThreshold &&
-		!(c.opts.TextChange == TextChangeFails && anyTextChanged(sample))
+		!(c.opts.TextChange == TextChangeFails && anyTextChanged(sample)) &&
+		!(c.opts.Tiles && anyTileChanged(sample))
+}
+
+// anyTileChanged reports whether the worst tile of any page changed.
+func anyTileChanged(pages []PageResult) bool {
+	for _, p := range pages {
+		if p.TileChanged {
+			return true
+		}
+	}
+	return false
 }
 
 // anyTextChanged reports whether the text of any page changed.
@@ -584,8 +597,12 @@ func (c *comparer) scorePage(pageNum int, img1, img2 image.Image, info pageInfoP
 	r.Similarity = textAdjust(r.Similarity, info, textSim)
 	r.TextSimilarity = textSim
 	r.TextChanged = textChanged(info)
+	if c.useTiles(info) {
+		applyTiles(&r, img1, img2)
+	}
 	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold ||
-		(r.TextChanged && c.opts.TextChange == TextChangeFails)
+		(r.TextChanged && c.opts.TextChange == TextChangeFails) ||
+		r.TileChanged
 	return r
 }
 
@@ -610,6 +627,28 @@ func (c *comparer) visualScore(img1, img2 image.Image) PageResult {
 		r = cascadeHashes(img1, img2)
 	}
 	return r
+}
+
+// useTiles reports whether a page is checked by its tiles. A page whose
+// text changed is not: the text rule already judges it, and a tile cannot
+// tell a reworded line from a stamp, so tiles would override a caller who
+// asked for small text changes to pass (TextChangeScored).
+func (c *comparer) useTiles(info pageInfoPair) bool {
+	return c.opts.Tiles && !textChanged(info)
+}
+
+// applyTiles records the page's worst tile and whether it changed. Like a
+// text change, a changed tile decides the verdict and leaves Similarity
+// alone: the score says how much of the page changed, and a stamp is a small
+// part of it, though the hashes cannot see it.
+func applyTiles(r *PageResult, img1, img2 image.Image) {
+	diff, tile := visual.TileDiff(img1, img2)
+	if tile == nil {
+		return
+	}
+	sim := visual.TileScore(diff)
+	r.TileSimilarity, r.WorstTile = &sim, tile
+	r.TileChanged = diff > visual.TileTolerance
 }
 
 // cascadeHashes runs dHash, then pHash only when dHash finds the pages at
@@ -689,6 +728,7 @@ func (r *Result) setPages(pages []PageResult, strategy string, hashType HashType
 	}
 	r.PageResults = pages
 	r.TextChanged = anyTextChanged(pages)
+	r.TileChanged = anyTileChanged(pages)
 }
 
 // statFiles records both file sizes.

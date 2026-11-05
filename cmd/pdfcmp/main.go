@@ -28,6 +28,7 @@ var (
 	hashType     string
 	textHash     string
 	textTolerant bool
+	noTiles      bool
 	sampling     string
 	maxMemory    int
 )
@@ -66,6 +67,7 @@ identical or similar PDF documents with extreme speed.`,
 	compareCmd.Flags().Float64VarP(&threshold, "threshold", "t", 0.95, "Similarity threshold (0.0 to 1.0)")
 	compareCmd.Flags().StringVar(&hashType, "hash", "both", "Hash type: dhash, phash, both")
 	compareCmd.Flags().StringVar(&textHash, "text-hash", "minhash", "Text similarity for pages whose text differs: minhash, off")
+	compareCmd.Flags().BoolVar(&noTiles, "no-tiles", false, "Score pages by their perceptual hashes alone, without the worst-tile check for small local changes")
 	compareCmd.Flags().BoolVar(&textTolerant, "text-tolerant", false, "Let the threshold decide when a page's text changed, instead of calling the files different")
 	compareCmd.Flags().StringVar(&sampling, "sampling", "auto", "Sampling strategy: auto, all, strategic, thumbnail")
 	compareCmd.Flags().IntVar(&maxMemory, "memory", 512, "Max memory in MB")
@@ -154,6 +156,7 @@ func compareOptions() ([]compare.Option, error) {
 	}
 	opts := []compare.Option{
 		compare.WithTextChange(textChange),
+		compare.WithTiles(!noTiles),
 		compare.WithDPI(dpi),
 		compare.WithWorkers(workers),
 		compare.WithThreshold(threshold),

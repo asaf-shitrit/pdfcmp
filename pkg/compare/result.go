@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/asafshitrit/pdfcmp/pkg/visual"
 )
 
 // Result represents the complete comparison result
@@ -37,6 +39,14 @@ type Result struct {
 	// TextChanged is true when the extracted text of any compared page
 	// differs. By default it makes IsSimilar false at any threshold.
 	TextChanged bool `json:"text_changed"`
+
+	// TileChanged is true when the worst tile of any compared page changed
+	// by more than visual.TileTolerance. With tiles on it makes IsSimilar
+	// false at any threshold.
+	TileChanged bool `json:"tile_changed,omitempty"`
+
+	// tiles is the comparer's Tiles option, which IsSimilar applies
+	tiles bool
 
 	// textMode is the comparer's TextChangeMode, which IsSimilar applies
 	textMode TextChangeMode
@@ -113,8 +123,23 @@ type PageResult struct {
 	// PHash2 is the pHash of page in second PDF
 	PHash2 uint64 `json:"phash2,omitempty"`
 
+	// TileSimilarity is the page's worst tile score: 1 - d/visual.TileScale
+	// for the largest difference d between two tiles' mean grey levels, so
+	// 0.95 is the tolerance (visual.TileTolerance). It is a diagnostic, set
+	// when the page was checked on tiles; it does not enter Similarity.
+	TileSimilarity *float64 `json:"tile_similarity,omitempty"`
+
+	// WorstTile is the tile that scored TileSimilarity
+	WorstTile *visual.Tile `json:"worst_tile,omitempty"`
+
+	// TileChanged is true when the worst tile changed by more than
+	// visual.TileTolerance. It makes the page different, whatever its
+	// Similarity.
+	TileChanged bool `json:"tile_changed,omitempty"`
+
 	// IsDifferent is true when the page scores below the threshold or,
-	// unless the comparison used TextChangeScored, its text changed
+	// unless the comparison used TextChangeScored, its text changed, or when
+	// its worst tile changed
 	IsDifferent bool `json:"is_different"`
 
 	// TextChanged is true when the two pages' extracted text differs,
@@ -159,9 +184,12 @@ func (r *Result) DifferentPages() []int {
 
 // IsSimilar reports whether the documents are similar: the similarity score
 // reaches the threshold and, unless the comparison used TextChangeScored, no
-// page's text changed.
+// page's text changed and, unless it turned tiles off, no page's tile changed.
 func (r *Result) IsSimilar(threshold float64) bool {
 	if r.TextChanged && r.textMode == TextChangeFails {
+		return false
+	}
+	if r.TileChanged && r.tiles {
 		return false
 	}
 	return r.SimilarityScore >= threshold

@@ -21,12 +21,13 @@
 //
 // # Tiles
 //
-// Both hashes see the page as a whole. TileSimilarity cuts a page into a grid
-// of 64x90 tiles (90x64 for a landscape page), compares the mean grey level of
-// each tile with its counterpart, and scores the page 1 - d/TileScale for the
-// largest difference d. A tile averages thousands of pixels, so JPEG noise
-// washes out of it, and a stamp or a changed paragraph, which the hashes
-// miss, moves a tile by tens of grey levels.
+// Both hashes see the page as a whole. TileDiff cuts a page into a grid of
+// 64x90 tiles (90x64 for a landscape page) and returns the largest difference
+// between the mean grey levels of two pages' matching tiles. A tile averages
+// thousands of pixels, so JPEG noise washes out of it, while a stamp or a
+// changed paragraph, which the hashes miss, moves a tile by tens of grey
+// levels. A difference above TileTolerance is a change. TileSimilarity scores
+// it 1 - d/TileScale, which is 0.95 at the tolerance.
 //
 // # Similarity Calculation
 //

@@ -12,16 +12,18 @@ const (
 	TileCols = 64
 	TileRows = 90
 
-	// TileScale is the mean-intensity difference, in grey levels, that
-	// scores a tile 0. A tile scores 1 - diff/TileScale, so the default
-	// threshold of 0.95 falls at a difference of 6 grey levels.
-	//
-	// Measured through pdfium on scans of eight seeds, re-encoding between
-	// JPEG quality 92 and 50 moved no tile by more than 2.1 grey levels at
-	// 72, 150 and 300 DPI, while a stamp of 60x30 px or more on an 840x1188 px
-	// scan moved one tile by at least 16 (TestTileSeparation checks the same
-	// split on decoded JPEGs).
-	TileScale = 120.0
+	// TileTolerance is the largest difference, in grey levels, between two
+	// tiles' mean intensities that still counts as the same page. Measured
+	// through pdfium on scans of eight seeds, re-encoding between JPEG
+	// quality 92 and 50 moved no tile by more than 2.1 grey levels at 72, 150
+	// and 300 DPI, while a stamp of 60x30 px or more on an 840x1188 px scan
+	// moved one tile by at least 16 (TestTileSeparation checks the same split
+	// on decoded JPEGs).
+	TileTolerance = 6.0
+
+	// TileScale is the difference that scores a tile 0. A tile scores
+	// 1 - diff/TileScale, so a difference of TileTolerance scores 0.95.
+	TileScale = 20 * TileTolerance
 )
 
 // Tile is one cell of a page's tile grid.
@@ -98,16 +100,19 @@ func tileGrid(w, h int) (cols, rows int) {
 	return TileCols, TileRows
 }
 
-// TileSimilarity scores the pages by their worst tile: 1 - d/TileScale for
-// the largest difference d between two tiles' mean grey levels, floored at 0.
-// Both pages are cut on the grid of the first, so a portrait page against a
-// landscape one differs everywhere. It returns the worst tile, and
-// similarity 1 with no tile when a page is too small to cut into tiles.
-func TileSimilarity(img1, img2 image.Image) (float64, *Tile) {
+// TileScore converts a tile difference in grey levels to a score from 0 to
+// 1: 1 - d/TileScale, so TileTolerance scores 0.95.
+func TileScore(diff float64) float64 { return math.Max(0, 1-diff/TileScale) }
+
+// TileDiff finds the tile that differs most between the pages and returns
+// the difference between its mean grey levels. Both pages are cut on the
+// grid of the first, so a portrait page against a landscape one differs
+// everywhere. It returns no tile when a page is too small to cut into tiles.
+func TileDiff(img1, img2 image.Image) (float64, *Tile) {
 	cols, rows := tileGrid(img1.Bounds().Dx(), img1.Bounds().Dy())
 	m1, m2 := TileMeans(img1, cols, rows), TileMeans(img2, cols, rows)
 	if m1 == nil || m2 == nil {
-		return 1, nil
+		return 0, nil
 	}
 	worst, idx := 0.0, 0
 	for i := range m1 {
@@ -115,5 +120,13 @@ func TileSimilarity(img1, img2 image.Image) (float64, *Tile) {
 			worst, idx = d, i
 		}
 	}
-	return math.Max(0, 1-worst/TileScale), &Tile{Col: idx % cols, Row: idx / cols, Cols: cols, Rows: rows}
+	return worst, &Tile{Col: idx % cols, Row: idx / cols, Cols: cols, Rows: rows}
+}
+
+// TileSimilarity scores the pages by their worst tile (see TileDiff and
+// TileScore). It returns similarity 1 and no tile when a page is too small
+// to cut into tiles.
+func TileSimilarity(img1, img2 image.Image) (float64, *Tile) {
+	d, tile := TileDiff(img1, img2)
+	return TileScore(d), tile
 }

@@ -116,7 +116,7 @@ func TestTileSimilarityDPIIndependent(t *testing.T) {
 	}
 }
 
-// TestTileSeparation is the held-out check behind TileScale: the same scan
+// TestTileSeparation is the held-out check behind TileTolerance: the same scan
 // at two JPEG qualities against the same scan with a stamp on it, over
 // several seeds, stamp sizes and positions, with the stamp over light, dark
 // and mid regions. Every rescan must pass the default threshold with room to
@@ -179,5 +179,18 @@ func TestTileMeansImageTypes(t *testing.T) {
 				t.Fatalf("%s: tile %d mean %.2f, want %.2f", name, i, got[i], ref[i])
 			}
 		}
+	}
+}
+
+func TestTileScoreAtTolerance(t *testing.T) {
+	if got := TileScore(TileTolerance); got < 0.9499 || got > 0.9501 {
+		t.Errorf("TileScore(TileTolerance) = %v, want 0.95", got)
+	}
+	if TileScore(0) != 1 || TileScore(TileScale*2) != 0 {
+		t.Errorf("TileScore(0) = %v, TileScore(2*TileScale) = %v, want 1 and 0", TileScore(0), TileScore(TileScale*2))
+	}
+	a, b := flat(640, 900, 100), flat(640, 900, 100+TileTolerance+1)
+	if d, _ := TileDiff(a, b); d <= TileTolerance {
+		t.Errorf("uniform shift of %v grey levels: diff %v, want it above the tolerance", TileTolerance+1, d)
 	}
 }

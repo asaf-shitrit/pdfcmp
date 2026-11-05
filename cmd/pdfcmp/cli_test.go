@@ -19,18 +19,18 @@ import (
 // lets set override some of them, and restores the previous values after.
 func withFlags(t *testing.T, set func()) {
 	t.Helper()
-	saved := []any{verbose, quiet, format, mode, dpi, workers, threshold, hashType, textHash, sampling, maxMemory, textTolerant}
+	saved := []any{verbose, quiet, format, mode, dpi, workers, threshold, hashType, textHash, sampling, maxMemory, textTolerant, noTiles}
 	t.Cleanup(func() {
 		verbose, quiet, format = saved[0].(bool), saved[1].(bool), saved[2].(string)
 		mode, dpi, workers = saved[3].(string), saved[4].(int), saved[5].(int)
 		threshold, hashType, textHash = saved[6].(float64), saved[7].(string), saved[8].(string)
 		sampling, maxMemory = saved[9].(string), saved[10].(int)
-		textTolerant = saved[11].(bool)
+		textTolerant, noTiles = saved[11].(bool), saved[12].(bool)
 	})
 	verbose, quiet, format = false, true, "text"
 	mode, dpi, workers, threshold = "auto", 72, runtime.NumCPU(), 0.95
 	hashType, textHash, sampling, maxMemory = "both", "minhash", "auto", 512
-	textTolerant = false
+	textTolerant, noTiles = false, false
 	if set != nil {
 		set()
 	}
@@ -55,13 +55,13 @@ func TestCompareOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(opts) != 9 {
-		t.Errorf("got %d options, want 8", len(opts))
+	if len(opts) != 10 {
+		t.Errorf("got %d options, want 10", len(opts))
 	}
 
 	withFlags(t, func() { verbose, quiet = true, false })
-	if opts, _ := compareOptions(); len(opts) != 10 {
-		t.Errorf("verbose: got %d options, want 10 with a progress callback", len(opts))
+	if opts, _ := compareOptions(); len(opts) != 11 {
+		t.Errorf("verbose: got %d options, want 11 with a progress callback", len(opts))
 	}
 }
 
