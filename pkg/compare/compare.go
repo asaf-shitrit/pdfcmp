@@ -31,6 +31,9 @@ type Comparer interface {
 type comparer struct {
 	opts     Options
 	renderer render.Renderer
+
+	rendererOnce sync.Once
+	rendererErr  error
 }
 
 // New creates a new Comparer with the given options
@@ -43,15 +46,24 @@ func New(opts ...Option) (Comparer, error) {
 		return nil, fmt.Errorf("invalid options: %w", err)
 	}
 
-	renderer, err := render.NewPdfiumRenderer()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create renderer: %w", err)
-	}
+	return &comparer{opts: options}, nil
+}
 
-	return &comparer{
-		opts:     options,
-		renderer: renderer,
-	}, nil
+// getRenderer starts PDFium on first use, so comparisons that never reach
+// the visual stages skip its startup cost.
+func (c *comparer) getRenderer() (render.Renderer, error) {
+	c.rendererOnce.Do(func() {
+		if c.renderer != nil {
+			return
+		}
+		r, err := render.NewPdfiumRenderer()
+		if err != nil {
+			c.rendererErr = fmt.Errorf("failed to create renderer: %w", err)
+			return
+		}
+		c.renderer = r
+	})
+	return c.renderer, c.rendererErr
 }
 
 // Quick performs a quick byte-wise only comparison
@@ -175,13 +187,17 @@ func (c *comparer) byteStage(result *Result, pdf1, pdf2 string) (bool, error) {
 // visualStages opens both documents and compares their pages: thumbnails
 // first, then a sample, then every page when the sample cannot decide.
 func (c *comparer) visualStages(ctx context.Context, result *Result, pdf1, pdf2 string) error {
-	doc1, err := c.renderer.Open(pdf1)
+	renderer, err := c.getRenderer()
+	if err != nil {
+		return err
+	}
+	doc1, err := renderer.Open(pdf1)
 	if err != nil {
 		return fmt.Errorf("failed to open %s: %w", pdf1, err)
 	}
 	defer func() { _ = doc1.Close() }()
 
-	doc2, err := c.renderer.Open(pdf2)
+	doc2, err := renderer.Open(pdf2)
 	if err != nil {
 		return fmt.Errorf("failed to open %s: %w", pdf2, err)
 	}

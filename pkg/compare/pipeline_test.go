@@ -204,3 +204,16 @@ func TestPageCountMismatch(t *testing.T) {
 		}
 	}
 }
+
+func TestNewDoesNotStartRenderer(t *testing.T) {
+	c, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.(*comparer).renderer != nil {
+		t.Fatal("renderer created eagerly")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatalf("Close without renderer: %v", err)
+	}
+}
