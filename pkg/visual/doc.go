@@ -34,6 +34,6 @@
 //
 //	similarity := visual.CombinedSimilarity(dHash1, dHash2, pHash1, pHash2)
 //
-// The combined score weights dHash at 40% and pHash at 60%, as pHash
-// is more robust to minor visual variations.
+// The combined score is the plain average of the dHash similarity and the
+// pHash similarity: 1 - (d + p)/128 for Hamming distances d and p.
 package visual

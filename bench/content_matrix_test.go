@@ -21,7 +21,8 @@ import (
 // one of which holds an invoice total. Variants change only the middle page:
 //
 //	same:    the document is rebuilt from the same seed (same content, new bytes)
-//	replace: every line of the middle page is different text in the same layout
+//	replace: 24 of the middle page's 25 lines are different text in the same
+//	         layout; line 13, the invoice total, is kept
 //	half:    12 of the middle page's 25 lines are different text
 //	line:    one line of the middle page is different text
 //	number:  the invoice total on the middle page changes by one digit

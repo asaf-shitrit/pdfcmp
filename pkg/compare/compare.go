@@ -91,6 +91,7 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 			File2: pdf2,
 		},
 		ComparisonLayers: []string{},
+		textMode:         c.opts.TextChange,
 	}
 	if err := c.runStages(ctx, result, pdf1, pdf2); err != nil {
 		return nil, err
@@ -299,10 +300,22 @@ func (c *comparer) sampleStage(ctx context.Context, result *Result, doc1, doc2 r
 
 // needsFullScan reports whether a sample leaves the comparison open: sampling
 // is automatic, it left pages out, and every sampled page is similar. One
-// sampled page below the threshold already makes the documents different.
+// sampled page below the threshold already makes the documents different,
+// and so does one whose text changed, unless TextChangeScored is set.
 func (c *comparer) needsFullScan(sample []PageResult, pageCount int) bool {
 	return c.opts.Sampling == SamplingAuto && len(sample) < pageCount &&
-		worstSimilarity(sample) >= c.opts.SimilarityThreshold
+		worstSimilarity(sample) >= c.opts.SimilarityThreshold &&
+		!(c.opts.TextChange == TextChangeFails && anyTextChanged(sample))
+}
+
+// anyTextChanged reports whether the text of any page changed.
+func anyTextChanged(pages []PageResult) bool {
+	for _, p := range pages {
+		if p.TextChanged {
+			return true
+		}
+	}
+	return false
 }
 
 // samplePages returns the pages the sample stage compares and the name of
@@ -570,6 +583,7 @@ func (c *comparer) scorePage(pageNum int, img1, img2 image.Image, info pageInfoP
 	r.Page = pageNum + 1
 	r.Similarity = textAdjust(r.Similarity, info, textSim)
 	r.TextSimilarity = textSim
+	r.TextChanged = textChanged(info)
 	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold
 	return r
 }
@@ -635,6 +649,13 @@ func textAdjust(similarity float64, info pageInfoPair, textSim *float64) float64
 	return similarity
 }
 
+// textChanged reports whether a page's text differs between the documents.
+// A page with text against one without counts; two pages without text, such
+// as scans, do not.
+func textChanged(info pageInfoPair) bool {
+	return info.ok && info.info1.TextHash != info.info2.TextHash
+}
+
 // setIdentical records documents found identical without comparing pages.
 func (r *Result) setIdentical(strategy string) {
 	r.Identical = true
@@ -666,6 +687,7 @@ func (r *Result) setPages(pages []PageResult, strategy string, hashType HashType
 		DPI:              dpi,
 	}
 	r.PageResults = pages
+	r.TextChanged = anyTextChanged(pages)
 }
 
 // statFiles records both file sizes.
