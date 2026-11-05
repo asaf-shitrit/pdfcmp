@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"image"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sync"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/klippa-app/go-pdfium/requests"
 	"github.com/klippa-app/go-pdfium/responses"
 	"github.com/klippa-app/go-pdfium/webassembly"
+	"github.com/tetratelabs/wazero"
 
 	"github.com/asafshitrit/pdfcmp/pkg/bytewise"
 )
@@ -57,12 +60,42 @@ func getPool(maxWorkers int) (pdfium.Pool, error) {
 			poolSize = MaxPoolSize
 		}
 		globalPool, globalPoolErr = webassembly.Init(webassembly.Config{
-			MinIdle:  1,
-			MaxIdle:  poolSize,
-			MaxTotal: poolSize,
+			MinIdle:       1,
+			MaxIdle:       poolSize,
+			MaxTotal:      poolSize,
+			RuntimeConfig: runtimeConfig(),
 		})
 	})
 	return globalPool, globalPoolErr
+}
+
+// cacheDir returns the directory for the compiled-wasm cache, or "" when
+// none can be determined.
+func cacheDir() string {
+	if dir := os.Getenv("PDFCMP_CACHE_DIR"); dir != "" {
+		return dir
+	}
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(base, "pdfcmp", "wazero")
+}
+
+// runtimeConfig builds the wazero config. It uses an on-disk compilation
+// cache so pdfium.wasm is compiled once, not on every process start. Any
+// cache failure falls back to an uncached runtime.
+func runtimeConfig() wazero.RuntimeConfig {
+	cfg := wazero.NewRuntimeConfig()
+	dir := cacheDir()
+	if dir == "" {
+		return cfg
+	}
+	cache, err := wazero.NewCompilationCacheWithDir(dir)
+	if err != nil {
+		return cfg
+	}
+	return cfg.WithCompilationCache(cache)
 }
 
 // NewPdfiumRenderer creates a new PDFium-based renderer using WebAssembly.
