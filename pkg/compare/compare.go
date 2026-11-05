@@ -352,7 +352,7 @@ func (c *comparer) planPages(doc1, doc2 render.Document, pages []int) pagePlan {
 		info2, err2 := doc2.PageInfo(pageNum)
 		ok := err1 == nil && err2 == nil
 
-		if ok && textDecides(info1, info2) {
+		if ok && textDecides(info1, info2) && contentMatches(doc1, doc2, pageNum) {
 			plan.results[i] = PageResult{Page: pageNum + 1, Similarity: 1.0}
 			continue
 		}
@@ -366,9 +366,18 @@ func (c *comparer) planPages(doc1, doc2 render.Document, pages []int) pagePlan {
 	return plan
 }
 
-// textDecides reports whether two pages are identical by text alone: both
-// have text, it hashes the same, and so does their object count, which
-// guards against a graphical change beside unchanged text.
+// contentMatches reports whether both documents' page has the same content
+// hash. A hash error counts as no match, so the page is rendered.
+func contentMatches(doc1, doc2 render.Document, pageNum int) bool {
+	h1, err1 := doc1.ContentHash(pageNum)
+	h2, err2 := doc2.ContentHash(pageNum)
+	return err1 == nil && err2 == nil && h1 == h2
+}
+
+// textDecides reports whether two pages are candidates to be identical
+// without rendering: both have text, it hashes the same, and so does their
+// object count. It is only a candidate test; planPages also requires equal
+// content hashes, which catch graphics redrawn beside unchanged text.
 func textDecides(info1, info2 render.PageInfo) bool {
 	return info1.TextHash != 0 && info1.TextHash == info2.TextHash && info1.ObjectCount == info2.ObjectCount
 }

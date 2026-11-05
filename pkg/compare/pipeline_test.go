@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/asafshitrit/pdfcmp/internal/fixtures"
 	"github.com/asafshitrit/pdfcmp/pkg/render"
 )
 
@@ -26,6 +27,10 @@ type fakeDoc struct {
 	streamErr error
 	delay     time.Duration
 	rendered  atomic.Int32
+
+	textHash   uint64 // reported by PageInfo; 0 means no text
+	content    uint64 // reported by ContentHash
+	contentErr error
 }
 
 // errBrokenPage is what a fakeDoc page in fail renders with.
@@ -34,8 +39,10 @@ var errBrokenPage = errors.New("page is broken")
 func (d *fakeDoc) PageCount() int { return d.pages }
 
 func (d *fakeDoc) PageInfo(pageNum int) (render.PageInfo, error) {
-	return render.PageInfo{Number: pageNum, WidthPts: 72, HeightPts: 72}, nil
+	return render.PageInfo{Number: pageNum, WidthPts: 72, HeightPts: 72, TextHash: d.textHash}, nil
 }
+
+func (d *fakeDoc) ContentHash(pageNum int) (uint64, error) { return d.content, d.contentErr }
 
 func (d *fakeDoc) RenderPage(ctx context.Context, pageNum int, opts render.Options) (image.Image, error) {
 	if d.fail[pageNum] {
@@ -202,5 +209,62 @@ func TestPageCountMismatch(t *testing.T) {
 			t.Errorf("%s vs %s: similarity %.4f, strategy %q; want 0 and page count mismatch",
 				filepath.Base(pair[0]), filepath.Base(pair[1]), res.SimilarityScore, res.VisualComparison.SamplingStrategy)
 		}
+	}
+}
+
+func TestComparePagesContentHashGatesTheTextShortcut(t *testing.T) {
+	cases := []struct {
+		name       string
+		content2   uint64
+		contentErr error
+		wantRender bool
+		wantNotOne bool
+	}{
+		{"same text and content skips rendering", 7, nil, false, false},
+		{"same text, different content renders", 8, nil, true, true},
+		{"content hash error renders", 7, errors.New("no hash"), true, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			doc1 := &fakeDoc{pages: 1, textHash: 5, content: 7}
+			doc2 := &fakeDoc{pages: 1, textHash: 5, content: tc.content2, contentErr: tc.contentErr, blank: map[int]bool{0: true}}
+			results, err := runComparePages(t, context.Background(), doc1, doc2, allPageNums(1))
+			if err != nil {
+				t.Fatal(err)
+			}
+			rendered := doc1.rendered.Load()+doc2.rendered.Load() > 0
+			if rendered != tc.wantRender {
+				t.Errorf("rendered = %v, want %v", rendered, tc.wantRender)
+			}
+			if (results[0].Similarity < 1.0) != tc.wantNotOne {
+				t.Errorf("similarity = %v, wantNotOne = %v", results[0].Similarity, tc.wantNotOne)
+			}
+		})
+	}
+}
+
+func TestRedrawnGraphicsAreNotSimilar(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.pdf"), filepath.Join(dir, "b.pdf")
+	if err := fixtures.Graphic(a, 10, 42); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixtures.Graphic(b, 10, 43); err != nil {
+		t.Fatal(err)
+	}
+	cmp, err := New(WithDPI(72), WithWorkers(2))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cmp.Close()
+	res, err := cmp.Compare(context.Background(), a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pr := range res.PageResults {
+		t.Logf("page %d similarity %.4f", pr.Page, pr.Similarity)
+	}
+	if res.IsSimilar(DefaultSimilarityThreshold) {
+		t.Errorf("redrawn graphics passed: similarity %.4f", res.SimilarityScore)
 	}
 }

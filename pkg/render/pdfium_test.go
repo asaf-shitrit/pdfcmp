@@ -2,6 +2,8 @@ package render
 
 import (
 	"context"
+	"fmt"
+	"path/filepath"
 	"testing"
 
 	"github.com/asafshitrit/pdfcmp/internal/fixtures"
@@ -130,6 +132,85 @@ func TestPdfiumIntegration(t *testing.T) {
 
 		if received != count {
 			t.Errorf("Expected %d pages, received %d", count, received)
+		}
+	})
+}
+
+// contentHashes writes each fixture to its own file and returns the content
+// hash of page 0 of every one.
+func contentHashes(t *testing.T, writers ...func(string) error) []uint64 {
+	t.Helper()
+	renderer, err := NewPdfiumRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer renderer.Close()
+
+	dir := t.TempDir()
+	var hashes []uint64
+	for i, write := range writers {
+		path := filepath.Join(dir, fmt.Sprintf("f%d.pdf", i))
+		if err := write(path); err != nil {
+			t.Fatal(err)
+		}
+		doc, err := renderer.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		h, err := doc.ContentHash(0)
+		_ = doc.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		hashes = append(hashes, h)
+	}
+	return hashes
+}
+
+func TestContentHash(t *testing.T) {
+	text := func(path string) error { return fixtures.Text(path, 2, "Title", 1) }
+	graphic := func(seed int64) func(string) error {
+		return func(path string) error { return fixtures.Graphic(path, 2, seed) }
+	}
+	scan := func(seed int64) func(string) error {
+		return func(path string) error { return fixtures.ImageOnly(path, 2, seed) }
+	}
+
+	t.Run("same content rebuilt is equal", func(t *testing.T) {
+		h := contentHashes(t, text, text)
+		if h[0] != h[1] {
+			t.Errorf("hashes differ: %x vs %x", h[0], h[1])
+		}
+	})
+	t.Run("redrawn shapes differ", func(t *testing.T) {
+		h := contentHashes(t, graphic(42), graphic(43))
+		if h[0] == h[1] {
+			t.Errorf("hashes equal: %x", h[0])
+		}
+	})
+	t.Run("image only pages differ by seed", func(t *testing.T) {
+		h := contentHashes(t, scan(1), scan(2))
+		if h[0] == h[1] {
+			t.Errorf("hashes equal: %x", h[0])
+		}
+	})
+	t.Run("out of range page fails", func(t *testing.T) {
+		renderer, err := NewPdfiumRenderer()
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer renderer.Close()
+		path := filepath.Join(t.TempDir(), "a.pdf")
+		if err := text(path); err != nil {
+			t.Fatal(err)
+		}
+		doc, err := renderer.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer doc.Close()
+		if _, err := doc.ContentHash(5); err == nil {
+			t.Error("want error")
 		}
 	})
 }
