@@ -584,7 +584,8 @@ func (c *comparer) scorePage(pageNum int, img1, img2 image.Image, info pageInfoP
 	r.Similarity = textAdjust(r.Similarity, info, textSim)
 	r.TextSimilarity = textSim
 	r.TextChanged = textChanged(info)
-	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold
+	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold ||
+		(r.TextChanged && c.opts.TextChange == TextChangeFails)
 	return r
 }
 

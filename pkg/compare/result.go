@@ -113,7 +113,8 @@ type PageResult struct {
 	// PHash2 is the pHash of page in second PDF
 	PHash2 uint64 `json:"phash2,omitempty"`
 
-	// IsDifferent indicates if this page differs significantly
+	// IsDifferent is true when the page scores below the threshold or,
+	// unless the comparison used TextChangeScored, its text changed
 	IsDifferent bool `json:"is_different"`
 
 	// TextChanged is true when the two pages' extracted text differs,

@@ -72,8 +72,10 @@ func main() {
     defer cmp.Close()
 
     result, _ := cmp.Compare(context.Background(), "a.pdf", "b.pdf")
-    if result.Similar {
-        fmt.Printf("Match! Score: %.2f%%\n", result.SimilarityScore * 100)
+    if result.IsSimilar(0.98) {
+        fmt.Printf("Match! Score: %.2f%%\n", result.SimilarityScore*100)
+    } else {
+        fmt.Println("Pages that changed:", result.DifferentPages())
     }
 }
 ```

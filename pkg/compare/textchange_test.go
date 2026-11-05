@@ -66,6 +66,12 @@ func TestTextChangeVerdict(t *testing.T) {
 	if !scored.IsSimilar(0.5) {
 		t.Errorf("TextChangeScored: want similar, score %v", scored.SimilarityScore)
 	}
+	if got := byDefault.DifferentPages(); len(got) != 1 || got[0] != 1 {
+		t.Errorf("default mode: DifferentPages = %v, want [1]", got)
+	}
+	if got := scored.DifferentPages(); len(got) != 0 {
+		t.Errorf("TextChangeScored: DifferentPages = %v, want none", got)
+	}
 }
 
 func TestTextChangedPresence(t *testing.T) {
