@@ -52,6 +52,11 @@ type Document interface {
 	// PageInfo returns information about a specific page
 	PageInfo(pageNum int) (PageInfo, error)
 
+	// ContentHash hashes a page's graphical content (object types, bounds,
+	// colours and image data), so that redrawn graphics beside unchanged
+	// text are told apart without rendering
+	ContentHash(pageNum int) (uint64, error)
+
 	// RenderPage renders a page to an image
 	RenderPage(ctx context.Context, pageNum int, opts Options) (image.Image, error)
 
