@@ -19,6 +19,15 @@
 //  3. Extract 8x8 low-frequency components
 //  4. Compute hash from median comparison
 //
+// # Tiles
+//
+// Both hashes see the page as a whole. TileSimilarity cuts a page into a grid
+// of 64x90 tiles (90x64 for a landscape page), compares the mean grey level of
+// each tile with its counterpart, and scores the page 1 - d/TileScale for the
+// largest difference d. A tile averages thousands of pixels, so JPEG noise
+// washes out of it, and a stamp or a changed paragraph, which the hashes
+// miss, moves a tile by tens of grey levels.
+//
 // # Similarity Calculation
 //
 // Image similarity is computed using Hamming distance between hashes:
