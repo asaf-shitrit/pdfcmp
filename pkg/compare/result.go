@@ -33,6 +33,13 @@ type Result struct {
 
 	// ComparisonLayers indicates which comparison layers were executed
 	ComparisonLayers []string `json:"comparison_layers"`
+
+	// TextChanged is true when the extracted text of any compared page
+	// differs. By default it makes IsSimilar false at any threshold.
+	TextChanged bool `json:"text_changed"`
+
+	// textMode is the comparer's TextChangeMode, which IsSimilar applies
+	textMode TextChangeMode
 }
 
 // ByteResult contains byte-wise comparison results
@@ -108,6 +115,10 @@ type PageResult struct {
 
 	// IsDifferent indicates if this page differs significantly
 	IsDifferent bool `json:"is_different"`
+
+	// TextChanged is true when the two pages' extracted text differs,
+	// including when only one page has text
+	TextChanged bool `json:"text_changed,omitempty"`
 }
 
 // Metadata contains information about the compared files
@@ -145,8 +156,13 @@ func (r *Result) DifferentPages() []int {
 	return pages
 }
 
-// IsSimilar returns true if the overall similarity exceeds the given threshold
+// IsSimilar reports whether the documents are similar: the similarity score
+// reaches the threshold and, unless the comparison used TextChangeScored, no
+// page's text changed.
 func (r *Result) IsSimilar(threshold float64) bool {
+	if r.TextChanged && r.textMode == TextChangeFails {
+		return false
+	}
 	return r.SimilarityScore >= threshold
 }
 
@@ -164,7 +180,7 @@ func (r *Result) Summary() string {
 	status := "DIFFERENT"
 	if r.Identical {
 		status = "IDENTICAL"
-	} else if r.SimilarityScore >= 0.95 {
+	} else if r.IsSimilar(DefaultSimilarityThreshold) {
 		status = "SIMILAR"
 	}
 

@@ -44,11 +44,12 @@ The simplest way to compare two files:
 ```bash
 pdfcmp compare file1.pdf file2.pdf
 ```
-*Exit code is `0` if similar, `1` if different.*
+*Exit code is `0` if similar, `1` if different. Any change to a page's extracted text counts as different, even a single digit; the similarity score still shows how much changed.*
 
 **Common flags:**
 - `--threshold 0.98`: Adjust similarity sensitivity (default is 0.95).
 - `--sampling all`: Scan every page instead of using the sampling heuristic.
+- `--text-tolerant`: Let the threshold decide when a page's text changed, instead of calling the files different. In Go: `compare.WithTextChange(compare.TextChangeScored)`.
 - `--text-hash off`: Compare page text by exact hash only, as v0.1.0 did.
 - `--format json`: Get detailed results in JSON format.
 - `-v`: Show progress and stage information.

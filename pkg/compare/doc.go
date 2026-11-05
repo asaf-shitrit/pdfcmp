@@ -60,4 +60,13 @@
 //
 // Result.SimilarityScore is the lowest page similarity: one changed page
 // makes the documents different, however many pages surround it.
+//
+// # Verdict
+//
+// Result.IsSimilar(threshold) is false when any compared page's extracted
+// text changed (Result.TextChanged), whatever the score: a changed invoice
+// total looks like the same page to a perceptual hash, and the score stays
+// graded to show how much changed. WithTextChange(TextChangeScored) restores
+// a verdict from the score and the threshold alone. Before this verdict, a
+// page with a one-digit text change could pass the default threshold.
 package compare
