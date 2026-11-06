@@ -256,3 +256,38 @@ func Generate(dir string, w io.Writer) error {
 	}
 	return nil
 }
+
+// Sequence writes one text page per id: ten lines of text seeded by the id,
+// under a heading that names it. Pages with the same id are identical in
+// every document, wherever they sit, because a page carries no number or
+// footer. Inserting, dropping or swapping ids therefore changes only those
+// pages, which makes Sequence the fixture for documents whose page counts
+// differ.
+func Sequence(path string, ids []int) error { return sequence(path, ids, false) }
+
+// Redrawn writes Sequence's document with each page drawn as another tool
+// might export it: the same text, plus a white rectangle that changes the
+// page's objects and content stream but not what it shows.
+func Redrawn(path string, ids []int) error { return sequence(path, ids, true) }
+
+func sequence(path string, ids []int, redrawn bool) error {
+	pdf := newPDF(path)
+	for _, id := range ids {
+		pdf.AddPage()
+		if redrawn {
+			pdf.SetFillColor(255, 255, 255)
+			pdf.Rect(1, 1, 2, 2, "F")
+		}
+		rng := rand.New(rand.NewSource(int64(id)))
+		pdf.SetFont("Arial", "B", 16)
+		pdf.Cell(40, 10, fmt.Sprintf("Section %d", id))
+		pdf.Ln(20)
+		pdf.SetFont("Arial", "", 12)
+		for j := 0; j < textLines; j++ {
+			pdf.Cell(0, 10, fmt.Sprintf("Clause %d.%d: the parties agree to term %d and to schedule %d.",
+				id, j+1, rng.Intn(1000), rng.Intn(1000)))
+			pdf.Ln(8)
+		}
+	}
+	return pdf.OutputFileAndClose(path)
+}

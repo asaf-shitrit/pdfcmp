@@ -205,8 +205,8 @@ func TestPageCountMismatch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if res.SimilarityScore != 0 || res.VisualComparison.SamplingStrategy != "page count mismatch" {
-			t.Errorf("%s vs %s: similarity %.4f, strategy %q; want 0 and page count mismatch",
+		if res.SimilarityScore != 0 || res.VisualComparison.SamplingStrategy != "page count mismatch, aligned" {
+			t.Errorf("%s vs %s: similarity %.4f, strategy %q; want 0 and page count mismatch, aligned",
 				filepath.Base(pair[0]), filepath.Base(pair[1]), res.SimilarityScore, res.VisualComparison.SamplingStrategy)
 		}
 	}
