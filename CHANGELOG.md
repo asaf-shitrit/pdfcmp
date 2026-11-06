@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Page alignment: when page counts differ, pages are aligned by their text (by object count and content hash when a page has none) instead of the comparison stopping at "page count mismatch". `Result.DeletedPages` and `InsertedPages` (`deleted_pages`, `inserted_pages`) name the pages with no counterpart, `PageResult.Page2` (`page2`) the aligned page in the second file, and every aligned pair is compared by the usual rules. `DifferentPages` includes deleted pages. `fixtures.Sequence` and `fixtures.Redrawn`.
 - Tile check: each rendered page is cut into a 64x90 grid (swapped for landscape) and the tiles' mean grey levels are compared. A page whose worst tile moves by more than 6 grey levels (`visual.TileTolerance`) is different (`tile_changed`), so a small local edit such as a stamp on a scan is no longer lost in the whole-page hashes. Like a text change it decides the verdict and leaves `Similarity` alone. Pages whose text changed are left to the text rule. `visual.TileDiff`, `visual.TileSimilarity`, `WithTiles` option, `--no-tiles` flag, and `PageResult.TileSimilarity`, `WorstTile`, `TileChanged` and `Result.TileChanged` (`tile_similarity`, `worst_tile`, `tile_changed` in JSON).
 - `visual.AlignedTileDiff`, the tile check for rescans: it fits the second page's exposure to the first's, finds the shift and lean between them, and matches each tile with the closest tile near where it should be, in both directions. A scan page (neither page has text) uses it instead of `TileDiff`, so a second scan of the same paper, shifted, rotated, re-exposed, blurred and noisier, is no longer called different in every tile. When its tiles agree, a hash score of at least 0.85 no longer fails the page. Pages with text are compared tile for tile as before.
 - `fixtures.Scans`, `ScanImage`, `TextScanImage` and `StampImage`, which write scanned-page PDFs and stamp them; `fixtures.Rescan`, a seeded rescan simulator at three strengths, and `fixtures.MarkImage`, which draws thin lines, ticks and dots.
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A CRAP gate: `make crap`, run before each commit by `.githooks/pre-commit` (`make hooks`).
 
 ### Changed
+- Extracted text is normalised before it is hashed or shingled (`content.Normalize`): NFKC, soft hyphens and zero-width characters dropped, whitespace runs collapsed. A Ghostscript rewrite of a LibreOffice export, which adds a space before each line break, no longer counts as a text change. `golang.org/x/text` is a direct dependency.
 - `Result.SimilarityScore` is now the lowest page similarity instead of the mean, so one changed page makes the documents different. `VisualComparison.OverallScore` keeps the mean.
 - A sample with any page below the threshold no longer triggers the full comparison; the documents are already different.
 - The thumbnail stage exits early when either thumbnail scores below 0.5, not when their mean does. The result then lists only the thumbnail pages.

@@ -9,7 +9,7 @@
 
 The tool follows a layered approach to avoid heavy rendering whenever possible. It includes new **Smart Heuristics** to speed up decision making:
 
-1.  **Metadata**: Checks page counts and basic file attributes.
+1.  **Metadata**: Checks page counts and basic file attributes. When the page counts differ, the pages are aligned by their text (pages without text by their object count and content hash): `deleted_pages` lists the first file's pages that have no counterpart, `inserted_pages` the second file's, and each aligned pair is compared as usual, with its number in the second file in `page2`. The documents are different either way.
 2.  **Byte-wise**: Runs an xxHash64 check to catch identical files instantly (~9 GB/s).
 3.  **Visual Thumbnails**:
     *   **Histogram Pre-check**: Calculates RGB histograms to reject major color differences instantly (2x faster than hashing).
@@ -154,7 +154,7 @@ Perceptual hashes are built to survive the edits above, which is also why they m
 | One line rewritten | | 11/15 | 15/15 | 13/15 |
 | One digit of a total | 2/15 | 3/15 | 3/15 | 3/15 |
 
-v0.1.0 averaged page scores, so one rewritten page of five or more passed. Scoring by the worst page fixes that on its own, but only by margin: a rewritten page still scores 0.81-0.89 on its perceptual hashes, so a threshold of 0.80 would pass it again. MinHash scores it below 0.01. A single changed number moves 3 of a page's ~230 shingles, an exact Jaccard similarity of 0.975, and both text hashes put it at 0.95 or above, so it passes the default threshold in every mode.
+v0.1.0 averaged page scores, so one rewritten page of five or more passed. Scoring by the worst page fixes that on its own, but only by margin: a rewritten page still scores 0.81-0.89 on its perceptual hashes, so a threshold of 0.80 would pass it again. MinHash scores it below 0.01. A single changed number moves 3 of a page's ~230 shingles, an exact Jaccard similarity of 0.975, and both text hashes put it at 0.95 or above, so it passes the default threshold in every mode. The verdict still catches it: by default any change to a page's extracted text makes the page different (`text_changed`), and `--text-tolerant` leaves it to the threshold. The text is normalised first (NFKC, soft hyphens and zero-width characters dropped, whitespace runs collapsed), so a re-export that only moves spaces, such as Ghostscript adding one before each line break, is not a change.
 
 pdfcmp uses MinHash, not SimHash, because SimHash counts repeated wording where MinHash sees a set. On a templated page, where every line repeats a label and only the values differ, a shingle repeated ten times outvotes the ten changed values. Five such pages with all ten values changed have an exact Jaccard similarity of 0.36-0.38; MinHash reads 0.31-0.41 and SimHash 0.96-0.99. SimHash's 8-byte fingerprint would only pay for itself if pdfcmp stored signatures, which it does not. `bench/simhash_test.go` keeps it for the comparison above.
 
