@@ -61,6 +61,18 @@ const (
 	TextHashOff
 )
 
+// TextChangeMode specifies whether a change to a page's text decides the verdict
+type TextChangeMode int
+
+const (
+	// TextChangeFails makes any exact change to a page's extracted text
+	// a difference, whatever the similarity score says (default)
+	TextChangeFails TextChangeMode = iota
+	// TextChangeScored leaves the verdict to the similarity score alone,
+	// so a small text change can pass the threshold
+	TextChangeScored
+)
+
 // SamplingStrategy specifies how pages are sampled for comparison
 type SamplingStrategy int
 
@@ -85,6 +97,14 @@ type Options struct {
 
 	// TextHash specifies how differing page text is scored
 	TextHash TextHashType
+
+	// TextChange specifies whether changed page text makes the documents different
+	TextChange TextChangeMode
+
+	// Tiles scores each rendered page by its worst tile as well as by its
+	// perceptual hashes, so a small local edit is not lost in the whole-page
+	// hash (default: true)
+	Tiles bool
 
 	// DPI for rendering pages (default: 150)
 	DPI int
@@ -122,6 +142,8 @@ func DefaultOptions() Options {
 		Mode:                ModeAuto,
 		HashType:            HashBoth,
 		TextHash:            TextMinHash,
+		TextChange:          TextChangeFails,
+		Tiles:               true,
 		DPI:                 render.DPIStandard,
 		Workers:             runtime.NumCPU(),
 		SimilarityThreshold: DefaultSimilarityThreshold,
@@ -152,6 +174,20 @@ func WithHashType(ht HashType) Option {
 func WithTextHash(t TextHashType) Option {
 	return func(o *Options) {
 		o.TextHash = t
+	}
+}
+
+// WithTextChange sets whether changed page text makes the documents different
+func WithTextChange(m TextChangeMode) Option {
+	return func(o *Options) {
+		o.TextChange = m
+	}
+}
+
+// WithTiles sets whether pages are also scored by their worst tile
+func WithTiles(on bool) Option {
+	return func(o *Options) {
+		o.Tiles = on
 	}
 }
 
@@ -230,6 +266,10 @@ func (o *Options) Validate() error {
 
 	if o.TextHash < TextMinHash || o.TextHash > TextHashOff {
 		errs = append(errs, fmt.Errorf("unknown text hash type %d", o.TextHash))
+	}
+
+	if o.TextChange < TextChangeFails || o.TextChange > TextChangeScored {
+		errs = append(errs, fmt.Errorf("unknown text change mode %d", o.TextChange))
 	}
 
 	if o.MaxMemoryMB <= 0 {

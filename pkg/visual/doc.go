@@ -19,6 +19,16 @@
 //  3. Extract 8x8 low-frequency components
 //  4. Compute hash from median comparison
 //
+// # Tiles
+//
+// Both hashes see the page as a whole. TileDiff cuts a page into a grid of
+// 64x90 tiles (90x64 for a landscape page) and returns the largest difference
+// between the mean grey levels of two pages' matching tiles. A tile averages
+// thousands of pixels, so JPEG noise washes out of it, while a stamp or a
+// changed paragraph, which the hashes miss, moves a tile by tens of grey
+// levels. A difference above TileTolerance is a change. TileSimilarity scores
+// it 1 - d/TileScale, which is 0.95 at the tolerance.
+//
 // # Similarity Calculation
 //
 // Image similarity is computed using Hamming distance between hashes:
@@ -34,6 +44,6 @@
 //
 //	similarity := visual.CombinedSimilarity(dHash1, dHash2, pHash1, pHash2)
 //
-// The combined score weights dHash at 40% and pHash at 60%, as pHash
-// is more robust to minor visual variations.
+// The combined score is the plain average of the dHash similarity and the
+// pHash similarity: 1 - (d + p)/128 for Hamming distances d and p.
 package visual

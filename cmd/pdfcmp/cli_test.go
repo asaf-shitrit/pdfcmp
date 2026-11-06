@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -11,22 +12,25 @@ import (
 
 	"github.com/asafshitrit/pdfcmp/internal/fixtures"
 	"github.com/asafshitrit/pdfcmp/pkg/compare"
+	"github.com/jung-kurt/gofpdf"
 )
 
 // withFlags sets the compare command's flags to their defaults for one test,
 // lets set override some of them, and restores the previous values after.
 func withFlags(t *testing.T, set func()) {
 	t.Helper()
-	saved := []any{verbose, quiet, format, mode, dpi, workers, threshold, hashType, textHash, sampling, maxMemory}
+	saved := []any{verbose, quiet, format, mode, dpi, workers, threshold, hashType, textHash, sampling, maxMemory, textTolerant, noTiles}
 	t.Cleanup(func() {
 		verbose, quiet, format = saved[0].(bool), saved[1].(bool), saved[2].(string)
 		mode, dpi, workers = saved[3].(string), saved[4].(int), saved[5].(int)
 		threshold, hashType, textHash = saved[6].(float64), saved[7].(string), saved[8].(string)
 		sampling, maxMemory = saved[9].(string), saved[10].(int)
+		textTolerant, noTiles = saved[11].(bool), saved[12].(bool)
 	})
 	verbose, quiet, format = false, true, "text"
 	mode, dpi, workers, threshold = "auto", 72, runtime.NumCPU(), 0.95
 	hashType, textHash, sampling, maxMemory = "both", "minhash", "auto", 512
+	textTolerant, noTiles = false, false
 	if set != nil {
 		set()
 	}
@@ -51,13 +55,13 @@ func TestCompareOptions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(opts) != 8 {
-		t.Errorf("got %d options, want 8", len(opts))
+	if len(opts) != 10 {
+		t.Errorf("got %d options, want 10", len(opts))
 	}
 
 	withFlags(t, func() { verbose, quiet = true, false })
-	if opts, _ := compareOptions(); len(opts) != 9 {
-		t.Errorf("verbose: got %d options, want 9 with a progress callback", len(opts))
+	if opts, _ := compareOptions(); len(opts) != 11 {
+		t.Errorf("verbose: got %d options, want 11 with a progress callback", len(opts))
 	}
 }
 
@@ -121,6 +125,69 @@ func TestCompareFiles(t *testing.T) {
 	withFlags(t, nil)
 	if _, err := compareFiles(cancelled, a, modified); err == nil || !strings.Contains(err.Error(), "comparison failed") {
 		t.Errorf("cancelled: err = %v", err)
+	}
+}
+
+// invoiceLine is a line of ten words that no other line of the invoice shares
+// a three-word run with.
+func invoiceLine(i int) string {
+	words := strings.Fields("amber basil cedar delta ember fjord grove harbor island jungle kettle lantern meadow nectar orchard pebble quartz ridge summit thistle upland velvet willow yonder zephyr")
+	line := make([]string, 10)
+	for j := range line {
+		line[j] = words[(i*j*7+i*3+j*11)%len(words)] + fmt.Sprint(i)
+	}
+	return strings.Join(line, " ")
+}
+
+// invoice writes a one-page document of 25 lines whose line 13 is a total.
+func invoice(t *testing.T, path, total string) string {
+	t.Helper()
+	pdf := gofpdf.New("P", "mm", "A4", "")
+	pdf.AddPage()
+	pdf.SetFont("Arial", "", 11)
+	for i := 1; i <= 25; i++ {
+		line := invoiceLine(i)
+		if i == 13 {
+			line = "Total due: " + total
+		}
+		pdf.Cell(0, 8, line)
+		pdf.Ln(9)
+	}
+	if err := pdf.OutputFileAndClose(path); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A pair that differs by one digit of text is different by default, which is
+// what the exit code follows, and similar when the text change is left to the
+// threshold.
+func TestTextChangeVerdict(t *testing.T) {
+	dir := t.TempDir()
+	a := invoice(t, filepath.Join(dir, "a.pdf"), "1200.00")
+	b := invoice(t, filepath.Join(dir, "b.pdf"), "1300.00")
+
+	withFlags(t, nil)
+	res, err := compareFiles(context.Background(), a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.TextChanged || res.IsSimilar(threshold) {
+		t.Errorf("default: text_changed %v, similar %v (score %.4f), want changed and different",
+			res.TextChanged, res.IsSimilar(threshold), res.SimilarityScore)
+	}
+
+	withFlags(t, func() { textTolerant = true })
+	tolerant, err := compareFiles(context.Background(), a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !tolerant.TextChanged || !tolerant.IsSimilar(threshold) {
+		t.Errorf("--text-tolerant: text_changed %v, similar %v (score %.4f), want changed and similar",
+			tolerant.TextChanged, tolerant.IsSimilar(threshold), tolerant.SimilarityScore)
+	}
+	if res.SimilarityScore != tolerant.SimilarityScore {
+		t.Errorf("score differs between modes: %v vs %v", res.SimilarityScore, tolerant.SimilarityScore)
 	}
 }
 

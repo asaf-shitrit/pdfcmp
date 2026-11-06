@@ -31,6 +31,9 @@ type Comparer interface {
 type comparer struct {
 	opts     Options
 	renderer render.Renderer
+
+	rendererOnce sync.Once
+	rendererErr  error
 }
 
 // New creates a new Comparer with the given options
@@ -43,15 +46,24 @@ func New(opts ...Option) (Comparer, error) {
 		return nil, fmt.Errorf("invalid options: %w", err)
 	}
 
-	renderer, err := render.NewPdfiumRenderer()
-	if err != nil {
-		return nil, fmt.Errorf("failed to create renderer: %w", err)
-	}
+	return &comparer{opts: options}, nil
+}
 
-	return &comparer{
-		opts:     options,
-		renderer: renderer,
-	}, nil
+// getRenderer starts PDFium on first use, so comparisons that never reach
+// the visual stages skip its startup cost.
+func (c *comparer) getRenderer() (render.Renderer, error) {
+	c.rendererOnce.Do(func() {
+		if c.renderer != nil {
+			return
+		}
+		r, err := render.NewPdfiumRenderer()
+		if err != nil {
+			c.rendererErr = fmt.Errorf("failed to create renderer: %w", err)
+			return
+		}
+		c.renderer = r
+	})
+	return c.renderer, c.rendererErr
 }
 
 // Quick performs a quick byte-wise only comparison
@@ -79,6 +91,8 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 			File2: pdf2,
 		},
 		ComparisonLayers: []string{},
+		textMode:         c.opts.TextChange,
+		tiles:            c.opts.Tiles,
 	}
 	if err := c.runStages(ctx, result, pdf1, pdf2); err != nil {
 		return nil, err
@@ -175,13 +189,17 @@ func (c *comparer) byteStage(result *Result, pdf1, pdf2 string) (bool, error) {
 // visualStages opens both documents and compares their pages: thumbnails
 // first, then a sample, then every page when the sample cannot decide.
 func (c *comparer) visualStages(ctx context.Context, result *Result, pdf1, pdf2 string) error {
-	doc1, err := c.renderer.Open(pdf1)
+	renderer, err := c.getRenderer()
+	if err != nil {
+		return err
+	}
+	doc1, err := renderer.Open(pdf1)
 	if err != nil {
 		return fmt.Errorf("failed to open %s: %w", pdf1, err)
 	}
 	defer func() { _ = doc1.Close() }()
 
-	doc2, err := c.renderer.Open(pdf2)
+	doc2, err := renderer.Open(pdf2)
 	if err != nil {
 		return fmt.Errorf("failed to open %s: %w", pdf2, err)
 	}
@@ -283,10 +301,34 @@ func (c *comparer) sampleStage(ctx context.Context, result *Result, doc1, doc2 r
 
 // needsFullScan reports whether a sample leaves the comparison open: sampling
 // is automatic, it left pages out, and every sampled page is similar. One
-// sampled page below the threshold already makes the documents different.
+// sampled page below the threshold already makes the documents different,
+// and so does one whose text changed, unless TextChangeScored is set, or one
+// whose tile changed, when tiles are on.
 func (c *comparer) needsFullScan(sample []PageResult, pageCount int) bool {
 	return c.opts.Sampling == SamplingAuto && len(sample) < pageCount &&
-		worstSimilarity(sample) >= c.opts.SimilarityThreshold
+		worstSimilarity(sample) >= c.opts.SimilarityThreshold &&
+		!(c.opts.TextChange == TextChangeFails && anyTextChanged(sample)) &&
+		!(c.opts.Tiles && anyTileChanged(sample))
+}
+
+// anyTileChanged reports whether the worst tile of any page changed.
+func anyTileChanged(pages []PageResult) bool {
+	for _, p := range pages {
+		if p.TileChanged {
+			return true
+		}
+	}
+	return false
+}
+
+// anyTextChanged reports whether the text of any page changed.
+func anyTextChanged(pages []PageResult) bool {
+	for _, p := range pages {
+		if p.TextChanged {
+			return true
+		}
+	}
+	return false
 }
 
 // samplePages returns the pages the sample stage compares and the name of
@@ -352,7 +394,7 @@ func (c *comparer) planPages(doc1, doc2 render.Document, pages []int) pagePlan {
 		info2, err2 := doc2.PageInfo(pageNum)
 		ok := err1 == nil && err2 == nil
 
-		if ok && textDecides(info1, info2) {
+		if ok && textDecides(info1, info2) && contentMatches(doc1, doc2, pageNum) {
 			plan.results[i] = PageResult{Page: pageNum + 1, Similarity: 1.0}
 			continue
 		}
@@ -366,9 +408,18 @@ func (c *comparer) planPages(doc1, doc2 render.Document, pages []int) pagePlan {
 	return plan
 }
 
-// textDecides reports whether two pages are identical by text alone: both
-// have text, it hashes the same, and so does their object count, which
-// guards against a graphical change beside unchanged text.
+// contentMatches reports whether both documents' page has the same content
+// hash. A hash error counts as no match, so the page is rendered.
+func contentMatches(doc1, doc2 render.Document, pageNum int) bool {
+	h1, err1 := doc1.ContentHash(pageNum)
+	h2, err2 := doc2.ContentHash(pageNum)
+	return err1 == nil && err2 == nil && h1 == h2
+}
+
+// textDecides reports whether two pages are candidates to be identical
+// without rendering: both have text, it hashes the same, and so does their
+// object count. It is only a candidate test; planPages also requires equal
+// content hashes, which catch graphics redrawn beside unchanged text.
 func textDecides(info1, info2 render.PageInfo) bool {
 	return info1.TextHash != 0 && info1.TextHash == info2.TextHash && info1.ObjectCount == info2.ObjectCount
 }
@@ -545,7 +596,13 @@ func (c *comparer) scorePage(pageNum int, img1, img2 image.Image, info pageInfoP
 	r.Page = pageNum + 1
 	r.Similarity = textAdjust(r.Similarity, info, textSim)
 	r.TextSimilarity = textSim
-	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold
+	r.TextChanged = textChanged(info)
+	if c.useTiles(info) {
+		applyTiles(&r, img1, img2)
+	}
+	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold ||
+		(r.TextChanged && c.opts.TextChange == TextChangeFails) ||
+		r.TileChanged
 	return r
 }
 
@@ -570,6 +627,28 @@ func (c *comparer) visualScore(img1, img2 image.Image) PageResult {
 		r = cascadeHashes(img1, img2)
 	}
 	return r
+}
+
+// useTiles reports whether a page is checked by its tiles. A page whose
+// text changed is not: the text rule already judges it, and a tile cannot
+// tell a reworded line from a stamp, so tiles would override a caller who
+// asked for small text changes to pass (TextChangeScored).
+func (c *comparer) useTiles(info pageInfoPair) bool {
+	return c.opts.Tiles && !textChanged(info)
+}
+
+// applyTiles records the page's worst tile and whether it changed. Like a
+// text change, a changed tile decides the verdict and leaves Similarity
+// alone: the score says how much of the page changed, and a stamp is a small
+// part of it, though the hashes cannot see it.
+func applyTiles(r *PageResult, img1, img2 image.Image) {
+	diff, tile := visual.TileDiff(img1, img2)
+	if tile == nil {
+		return
+	}
+	sim := visual.TileScore(diff)
+	r.TileSimilarity, r.WorstTile = &sim, tile
+	r.TileChanged = diff > visual.TileTolerance
 }
 
 // cascadeHashes runs dHash, then pHash only when dHash finds the pages at
@@ -610,6 +689,13 @@ func textAdjust(similarity float64, info pageInfoPair, textSim *float64) float64
 	return similarity
 }
 
+// textChanged reports whether a page's text differs between the documents.
+// A page with text against one without counts; two pages without text, such
+// as scans, do not.
+func textChanged(info pageInfoPair) bool {
+	return info.ok && info.info1.TextHash != info.info2.TextHash
+}
+
 // setIdentical records documents found identical without comparing pages.
 func (r *Result) setIdentical(strategy string) {
 	r.Identical = true
@@ -641,6 +727,8 @@ func (r *Result) setPages(pages []PageResult, strategy string, hashType HashType
 		DPI:              dpi,
 	}
 	r.PageResults = pages
+	r.TextChanged = anyTextChanged(pages)
+	r.TileChanged = anyTileChanged(pages)
 }
 
 // statFiles records both file sizes.

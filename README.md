@@ -18,6 +18,7 @@ The tool follows a layered approach to avoid heavy rendering whenever possible. 
 5.  **Text Similarity**: When the text differs, a MinHash signature of its word 3-shingles estimates how much of it the two pages share, and that caps the page's score. Perceptual hashes see where text sits, not what it says, so without this a page rewritten in the same layout still scores 81-89% visually similar. When both pages have fewer than 60 distinct shingles, about six lines, they keep their visual score: on short text a single changed word would move the estimate by more than 10%.
 6.  **Strategic Sampling**: For long documents, it analyzes a subset of pages ($\sqrt{n} + 2$) to estimate similarity.
 7.  **Full Analysis**: If needed, it performs a complete page-by-page comparison using perceptual hashing (dHash and pHash).
+8.  **Tiles**: Every rendered page is also cut into a 64x90 grid of tiles (about 1.5% of the page wide) and the tiles' mean grey levels are compared. A whole-page hash reduces the page to 9x8 or 32x32 samples, so a 120x60 px stamp on a scanned page left the score at 0.992; the stamp moves one tile by tens of grey levels. If the most changed tile moves by more than 6 grey levels, the page is different (`tile_changed` in the JSON), however high its score: like a text change, a tile change decides the verdict and leaves the score alone. A tile averages thousands of pixels, so a rescan at another JPEG quality moves none by more than about 2 levels. `tile_similarity` is `1 - d/120` for the worst tile's difference `d`, 0.95 at the tolerance, and `worst_tile` says where. A page whose text changed is left to the text rule. `--no-tiles` turns this off.
 
 A document is only as similar as its least similar page: the similarity score is the lowest page score, so one changed page makes a 100-page document different. The JSON output keeps the mean as `visual_comparison.overall_score`.
 
@@ -44,11 +45,13 @@ The simplest way to compare two files:
 ```bash
 pdfcmp compare file1.pdf file2.pdf
 ```
-*Exit code is `0` if similar, `1` if different.*
+*Exit code is `0` if similar, `1` if different. Any change to a page's extracted text counts as different, even a single digit; the similarity score still shows how much changed.*
 
 **Common flags:**
 - `--threshold 0.98`: Adjust similarity sensitivity (default is 0.95).
 - `--sampling all`: Scan every page instead of using the sampling heuristic.
+- `--no-tiles`: Judge pages by their perceptual hashes and text alone, without the worst-tile check. In Go: `compare.WithTiles(false)`.
+- `--text-tolerant`: Let the threshold decide when a page's text changed, instead of calling the files different. In Go: `compare.WithTextChange(compare.TextChangeScored)`.
 - `--text-hash off`: Compare page text by exact hash only, as v0.1.0 did.
 - `--format json`: Get detailed results in JSON format.
 - `-v`: Show progress and stage information.
@@ -71,8 +74,10 @@ func main() {
     defer cmp.Close()
 
     result, _ := cmp.Compare(context.Background(), "a.pdf", "b.pdf")
-    if result.Similar {
-        fmt.Printf("Match! Score: %.2f%%\n", result.SimilarityScore * 100)
+    if result.IsSimilar(0.98) {
+        fmt.Printf("Match! Score: %.2f%%\n", result.SimilarityScore*100)
+    } else {
+        fmt.Println("Pages that changed:", result.DifferentPages())
     }
 }
 ```

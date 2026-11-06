@@ -48,6 +48,22 @@
 //
 // Both hashes produce 64-bit values compared using Hamming distance.
 //
+// # Tiles
+//
+// A whole-page hash reduces a page to 9x8 or 32x32 samples, so a small local
+// edit, such as a stamp on a scanned page, barely moves it. Each rendered
+// page is therefore also cut into a grid of tiles (see package visual) and
+// the mean grey level of each tile is compared. If the most changed tile
+// moves by more than visual.TileTolerance grey levels, PageResult.TileChanged
+// is set, the page is different and Result.IsSimilar is false, whatever the
+// score. Like a text change, a tile change decides the verdict and leaves the
+// score alone: Similarity says how much of the page changed, and a stamp is a
+// small part of it. PageResult.TileSimilarity, 1 - d/visual.TileScale for the
+// worst tile's difference d (0.95 at the tolerance), and PageResult.WorstTile
+// show where. Tile means average out JPEG noise, so a rescan at another
+// quality does not trip it. Pages whose text changed are left to the text
+// rule. Turn tiles off with WithTiles(false).
+//
 // # Text Similarity
 //
 // Perceptual hashes record where text sits on a page, not what it says. When
@@ -60,4 +76,13 @@
 //
 // Result.SimilarityScore is the lowest page similarity: one changed page
 // makes the documents different, however many pages surround it.
+//
+// # Verdict
+//
+// Result.IsSimilar(threshold) is false when any compared page's extracted
+// text changed (Result.TextChanged), whatever the score: a changed invoice
+// total looks like the same page to a perceptual hash, and the score stays
+// graded to show how much changed. WithTextChange(TextChangeScored) restores
+// a verdict from the score and the threshold alone. Before this verdict, a
+// page with a one-digit text change could pass the default threshold.
 package compare
