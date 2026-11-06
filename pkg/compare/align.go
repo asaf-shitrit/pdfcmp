@@ -17,18 +17,20 @@ const (
 	// searched: its pages are paired by position, as one gap.
 	maxLCSCells = 4_000_000
 
-	// maxOffsetWork caps the text comparisons spent choosing how a short
-	// gap lines up with a longer one. Beyond it the gap lines up from its
-	// start.
-	maxOffsetWork = 2_000
+	// maxGapWork caps the text comparisons spent pairing the pages of one
+	// gap, which are n1*n2 for gaps of n1 and n2 pages. Beyond it the gap is
+	// paired by position, from its start.
+	maxGapWork = 10_000
 )
 
-// fingerprint identifies a page without rendering it. Two pages with equal
-// valid fingerprints are the same page. Pages without text and without
-// graphical objects, and pages whose info or content hash cannot be read,
-// are not valid and never match: scanned pages have no text hash, and a scan
-// saved again rarely has the same image bytes, so scans match only when
-// their content hashes agree.
+// fingerprint identifies a page for alignment, without rendering it. A page
+// with text is identified by its text hash alone, so a document exported
+// again by another tool, whose content streams differ, still lines up; the
+// pairs are then judged by the usual rules. A page without text is identified
+// by its object count and content hash, and so matches only when its
+// graphics are unchanged: a scan saved again rarely keeps its image bytes.
+// Pages with neither text nor objects, and pages whose info or content hash
+// cannot be read, are not valid and never match.
 type fingerprint struct {
 	text    uint64
 	objects int
@@ -48,11 +50,11 @@ func pageFingerprints(doc render.Document) ([]fingerprint, []string) {
 			continue
 		}
 		texts[i] = info.Text
-		fps[i] = fingerprint{
-			text:    info.TextHash,
-			objects: info.ObjectCount,
-			content: hash,
-			valid:   info.TextHash != 0 || info.ObjectCount > 0,
+		switch {
+		case info.TextHash != 0:
+			fps[i] = fingerprint{text: info.TextHash, valid: true}
+		case info.ObjectCount > 0:
+			fps[i] = fingerprint{objects: info.ObjectCount, content: hash, valid: true}
 		}
 	}
 	return fps, texts
@@ -147,52 +149,79 @@ func lcsPairs(a, b []fingerprint) []pagePair {
 }
 
 // addGap pairs the unmatched pages [s1,e1) of document 1 with [s2,e2) of
-// document 2. The shorter side is paired in full, in order, against the run
-// of the longer side that its text matches best; every other page is
-// deleted or inserted.
+// document 2, with pairGap; every page left over is deleted or inserted.
 func (al *alignment) addGap(s1, e1, s2, e2 int, sim func(i, j int) float64) {
-	n1, n2 := e1-s1, e2-s2
-	k := min(n1, n2)
-	o1, o2 := 0, 0
-	switch {
-	case n1 > n2:
-		o1 = bestOffset(n1-n2, k, func(o, t int) float64 { return sim(s1+o+t, s2+t) })
-	case n2 > n1:
-		o2 = bestOffset(n2-n1, k, func(o, t int) float64 { return sim(s1+t, s2+o+t) })
-	}
-	for t := range k {
-		al.gap = append(al.gap, pagePair{s1 + o1 + t, s2 + o2 + t})
+	used1, used2 := map[int]bool{}, map[int]bool{}
+	for _, p := range pairGap(e1-s1, e2-s2, func(i, j int) float64 { return sim(s1+i, s2+j) }) {
+		al.gap = append(al.gap, pagePair{s1 + p.p1, s2 + p.p2})
+		used1[s1+p.p1], used2[s2+p.p2] = true, true
 	}
 	for i := s1; i < e1; i++ {
-		if i < s1+o1 || i >= s1+o1+k {
+		if !used1[i] {
 			al.deleted = append(al.deleted, i)
 		}
 	}
 	for j := s2; j < e2; j++ {
-		if j < s2+o2 || j >= s2+o2+k {
+		if !used2[j] {
 			al.inserted = append(al.inserted, j)
 		}
 	}
 }
 
-// bestOffset returns the offset in 0..slack that gives the highest total of
-// score(offset, t) over t in 0..k-1, the earliest on a tie. Past
-// maxOffsetWork scores it returns 0.
-func bestOffset(slack, k int, score func(o, t int) float64) int {
-	if k == 0 || (slack+1)*k > maxOffsetWork {
-		return 0
-	}
-	best, bestSum := 0, -1.0
-	for o := 0; o <= slack; o++ {
-		sum := 0.0
-		for t := range k {
-			sum += score(o, t)
+// pairGap pairs the pages of a gap of n1 pages in one document with a gap of
+// n2 in the other, in order. The shorter side is paired in full, and the
+// pairs are the ones that maximise the total of sim (the likeness of page i
+// and page j), so a page dropped from the middle of a gap leaves the pages
+// after it paired with their own counterparts. On a tie the earliest pairing
+// wins. Past maxGapWork comparisons it pairs by position instead.
+func pairGap(n1, n2 int, sim func(i, j int) float64) []pagePair {
+	if n1 > n2 {
+		swapped := pairGap(n2, n1, func(i, j int) float64 { return sim(j, i) })
+		for k, p := range swapped {
+			swapped[k] = pagePair{p.p2, p.p1}
 		}
-		if sum > bestSum {
-			best, bestSum = o, sum
+		return swapped
+	}
+	if n1*n2 > maxGapWork {
+		pairs := make([]pagePair, n1)
+		for i := range pairs {
+			pairs[i] = pagePair{i, i}
+		}
+		return pairs
+	}
+	return bestPairing(n1, n2, sim)
+}
+
+// bestPairing pairs every page of a gap of n1 with a distinct page of a gap
+// of n2 >= n1, keeping order, for the highest total similarity.
+func bestPairing(n1, n2 int, sim func(i, j int) float64) []pagePair {
+	// best[i][j] is the highest total pairing the first i pages with the
+	// first j; -1 when j < i leaves a page unpaired.
+	best := make([][]float64, n1+1)
+	for i := range best {
+		best[i] = make([]float64, n2+1)
+		for j := range best[i] {
+			switch {
+			case i == 0:
+			case j < i:
+				best[i][j] = -1
+			default:
+				best[i][j] = best[i-1][j-1] + sim(i-1, j-1)
+				if j > i && best[i][j-1] >= best[i][j] {
+					best[i][j] = best[i][j-1]
+				}
+			}
 		}
 	}
-	return best
+	pairs := make([]pagePair, n1)
+	for i, j := n1, n2; i > 0; j-- {
+		if j > i && best[i][j] == best[i][j-1] {
+			continue // page j-1 is left out
+		}
+		i--
+		pairs[i] = pagePair{i, j - 1}
+	}
+	return pairs
 }
 
 // alignStage handles documents whose page counts differ. It aligns their
@@ -213,19 +242,18 @@ func (c *comparer) alignStage(ctx context.Context, result *Result, doc1, doc2 re
 		return s
 	})
 
-	scored, err := c.comparePairs(ctx, doc1, doc2, al.gap, render.Options{DPI: c.opts.DPI})
+	// Every aligned pair goes through the usual per-page rules: planPages
+	// skips rendering where text, object count and content hash all match,
+	// and renders the rest, as it does when the page counts are equal.
+	pairs := append(slices.Clone(al.exact), al.gap...)
+	slices.SortFunc(pairs, func(a, b pagePair) int { return a.p1 - b.p1 })
+	pages, err := c.comparePairs(ctx, doc1, doc2, pairs, render.Options{DPI: c.opts.DPI})
 	if err != nil {
 		return fmt.Errorf("aligned comparison failed: %w", err)
 	}
-	pages := make([]PageResult, 0, len(al.exact)+len(scored))
-	for _, p := range al.exact {
-		pages = append(pages, PageResult{Page: p.p1 + 1, Page2: p.p2 + 1, Similarity: 1.0})
+	for i := range pages {
+		pages[i].Page2 = pairs[i].p2 + 1
 	}
-	for i, r := range scored {
-		r.Page2 = al.gap[i].p2 + 1
-		pages = append(pages, r)
-	}
-	slices.SortFunc(pages, func(a, b PageResult) int { return a.Page - b.Page })
 
 	result.setPages(pages, "page count mismatch, aligned", c.opts.HashType, c.opts.DPI)
 	result.SimilarityScore = 0.0

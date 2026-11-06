@@ -263,10 +263,21 @@ func Generate(dir string, w io.Writer) error {
 // footer. Inserting, dropping or swapping ids therefore changes only those
 // pages, which makes Sequence the fixture for documents whose page counts
 // differ.
-func Sequence(path string, ids []int) error {
+func Sequence(path string, ids []int) error { return sequence(path, ids, false) }
+
+// Redrawn writes Sequence's document with each page drawn as another tool
+// might export it: the same text, plus a white rectangle that changes the
+// page's objects and content stream but not what it shows.
+func Redrawn(path string, ids []int) error { return sequence(path, ids, true) }
+
+func sequence(path string, ids []int, redrawn bool) error {
 	pdf := newPDF(path)
 	for _, id := range ids {
 		pdf.AddPage()
+		if redrawn {
+			pdf.SetFillColor(255, 255, 255)
+			pdf.Rect(1, 1, 2, 2, "F")
+		}
 		rng := rand.New(rand.NewSource(int64(id)))
 		pdf.SetFont("Arial", "B", 16)
 		pdf.Cell(40, 10, fmt.Sprintf("Section %d", id))

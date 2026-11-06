@@ -72,14 +72,6 @@ func TestAlignGapPairsByText(t *testing.T) {
 	if !slices.Equal(al.inserted, []int{1}) {
 		t.Errorf("inserted = %v, want [1]", al.inserted)
 	}
-
-	// Past the work cap the gap lines up from its start.
-	if got := bestOffset(maxOffsetWork, 2, func(o, t int) float64 { return float64(o) }); got != 0 {
-		t.Errorf("capped offset = %d, want 0", got)
-	}
-	if got := bestOffset(1, 0, nil); got != 0 {
-		t.Errorf("empty offset = %d, want 0", got)
-	}
 }
 
 // A middle too big for the LCS table is paired by position instead.
@@ -241,5 +233,109 @@ func TestEqualCountIsNotAligned(t *testing.T) {
 		if pr.Page2 != 0 {
 			t.Errorf("page %d has Page2 %d", pr.Page, pr.Page2)
 		}
+	}
+}
+
+// A page dropped from the middle of a gap leaves the pages after it paired
+// with their own counterparts, not shifted by one.
+func TestPairGapKeepsOrderAroundMidGapDeletion(t *testing.T) {
+	// Pages 0..3 of one side against 0..4 of the other; page 2 is gone.
+	same := func(i, j int) float64 {
+		if (i < 2 && j == i) || (i >= 2 && j == i+1) {
+			return 0.9
+		}
+		return 0.1
+	}
+	got := pairGap(4, 5, same)
+	if want := []pagePair{{0, 0}, {1, 1}, {2, 3}, {3, 4}}; !slices.Equal(got, want) {
+		t.Errorf("pairGap = %v, want %v", got, want)
+	}
+	// And the other way round: a deletion from the first side.
+	got = pairGap(5, 4, func(i, j int) float64 { return same(j, i) })
+	if want := []pagePair{{0, 0}, {1, 1}, {3, 2}, {4, 3}}; !slices.Equal(got, want) {
+		t.Errorf("transposed pairGap = %v, want %v", got, want)
+	}
+	// Past the work cap, pages pair by position.
+	got = pairGap(101, 102, same)
+	if len(got) != 101 || got[100] != (pagePair{100, 100}) {
+		t.Errorf("capped pairGap ends %v", got[len(got)-1])
+	}
+	if got := pairGap(0, 3, same); len(got) != 0 {
+		t.Errorf("empty side paired %v", got)
+	}
+}
+
+// A page with text is identified by its text alone; a page without, by its
+// graphics.
+func TestFingerprintsIgnoreContentOfTextPages(t *testing.T) {
+	dir := t.TempDir()
+	plain := sequence(t, dir, "plain.pdf", 1, 2)
+	redrawn := filepath.Join(dir, "redrawn.pdf")
+	if err := fixtures.Redrawn(redrawn, []int{1, 2}); err != nil {
+		t.Fatal(err)
+	}
+	cmp, err := New(WithDPI(72))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cmp.Close()
+	c := cmp.(*comparer)
+	r, err := c.getRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	d1, _ := r.Open(plain)
+	d2, _ := r.Open(redrawn)
+	defer d1.Close()
+	defer d2.Close()
+	f1, _ := pageFingerprints(d1)
+	f2, _ := pageFingerprints(d2)
+	if !f1[0].matches(f2[0]) || f1[0].matches(f2[1]) {
+		t.Errorf("fingerprints %+v vs %+v", f1, f2)
+	}
+}
+
+// The second document was exported again: every page has the same text but
+// other content streams. Pages still line up by text, and the pairs, judged
+// by the usual rules, are not reported as changed.
+func TestCompareAlignsReexportedDocument(t *testing.T) {
+	dir := t.TempDir()
+	base := sequence(t, dir, "base.pdf", 1, 2, 3, 4, 5, 6, 7, 8)
+	for _, tc := range []struct {
+		name              string
+		ids               []int
+		deleted, inserted []int
+	}{
+		{"deleted", []int{1, 2, 3, 4, 6, 7, 8}, []int{5}, nil},
+		{"inserted", []int{1, 2, 3, 90, 4, 5, 6, 7, 8}, nil, []int{4}},
+		{"deleted two", []int{1, 2, 3, 6, 7, 8}, []int{4, 5}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			other := filepath.Join(dir, strings.ReplaceAll(tc.name, " ", "_")+".pdf")
+			if err := fixtures.Redrawn(other, tc.ids); err != nil {
+				t.Fatal(err)
+			}
+			res := compareAligned(t, base, other)
+			if !slices.Equal(res.DeletedPages, tc.deleted) || !slices.Equal(res.InsertedPages, tc.inserted) {
+				t.Errorf("deleted %v inserted %v, want %v %v", res.DeletedPages, res.InsertedPages, tc.deleted, tc.inserted)
+			}
+			if got := res.changedPages(); len(got) != 0 {
+				t.Errorf("changed pages %v, want none", got)
+			}
+		})
+	}
+}
+
+// A modified page in a re-exported document is still reported.
+func TestCompareAlignsReexportedWithModifiedPage(t *testing.T) {
+	dir := t.TempDir()
+	base := sequence(t, dir, "base.pdf", 1, 2, 3, 4, 5, 6)
+	other := filepath.Join(dir, "other.pdf")
+	if err := fixtures.Redrawn(other, []int{1, 2, 95, 4, 6}); err != nil {
+		t.Fatal(err)
+	}
+	res := compareAligned(t, base, other)
+	if !slices.Equal(res.DeletedPages, []int{5}) || !slices.Equal(res.changedPages(), []int{3}) {
+		t.Errorf("deleted %v changed %v, want [5] [3]", res.DeletedPages, res.changedPages())
 	}
 }
