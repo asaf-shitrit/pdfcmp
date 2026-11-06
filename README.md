@@ -2,7 +2,7 @@
 
 `pdfcmp` is a lightning-fast PDF comparison engine and Go library. It utilizes a layered pipeline—combining byte-level hashing, text similarity, and perceptual visual comparison—to detect document similarities with maximum efficiency and accuracy.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/asafshitrit/pdfcmp.svg)](https://pkg.go.dev/github.com/asafshitrit/pdfcmp)
+[![Go Reference](https://pkg.go.dev/badge/github.com/asaf-shitrit/pdfcmp.svg)](https://pkg.go.dev/github.com/asaf-shitrit/pdfcmp)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 ## How it works
@@ -28,7 +28,7 @@ Rendering is powered by **PDFium** via WebAssembly, and the analysis is fully co
 
 ### CLI
 ```bash
-go install github.com/asafshitrit/pdfcmp/cmd/pdfcmp@latest
+go install github.com/asaf-shitrit/pdfcmp/cmd/pdfcmp@latest
 ```
 
 ### From source
@@ -66,7 +66,7 @@ pdfcmp quick file1.pdf file2.pdf
 import (
     "context"
     "fmt"
-    "github.com/asafshitrit/pdfcmp/pkg/compare"
+    "github.com/asaf-shitrit/pdfcmp/pkg/compare"
 )
 
 func main() {

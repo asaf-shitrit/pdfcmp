@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/asafshitrit/pdfcmp/internal/fixtures"
-	"github.com/asafshitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
 )
 
 // fakeDoc is a render.Document whose pages render as a flat grey image. Pages

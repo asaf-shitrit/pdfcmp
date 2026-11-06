@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/internal/fixtures"
+	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
 )
 
 func TestPdfiumIntegration(t *testing.T) {

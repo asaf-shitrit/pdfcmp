@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"runtime"
 
-	"github.com/asafshitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
 )
 
 // Validation constants

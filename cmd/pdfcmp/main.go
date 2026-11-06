@@ -10,7 +10,7 @@ import (
 	"runtime"
 	"syscall"
 
-	"github.com/asafshitrit/pdfcmp/pkg/compare"
+	"github.com/asaf-shitrit/pdfcmp/pkg/compare"
 	"github.com/spf13/cobra"
 )
 

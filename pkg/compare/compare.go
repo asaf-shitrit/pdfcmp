@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/asafshitrit/pdfcmp/pkg/bytewise"
-	"github.com/asafshitrit/pdfcmp/pkg/content"
-	"github.com/asafshitrit/pdfcmp/pkg/render"
-	"github.com/asafshitrit/pdfcmp/pkg/visual"
+	"github.com/asaf-shitrit/pdfcmp/pkg/bytewise"
+	"github.com/asaf-shitrit/pdfcmp/pkg/content"
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/pkg/visual"
 )
 
 // Comparer is the main interface for PDF comparison

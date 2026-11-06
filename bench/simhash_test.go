@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/pkg/content"
+	"github.com/asaf-shitrit/pdfcmp/pkg/content"
 )
 
 // SimHash was the alternative to MinHash for pdfcmp's text similarity. It

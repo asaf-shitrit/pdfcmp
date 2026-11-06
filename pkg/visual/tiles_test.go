@@ -8,7 +8,7 @@ import (
 	"math/rand"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/internal/fixtures"
+	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
 )
 
 // flat is a w x h page of one grey level.

@@ -5,7 +5,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
 )
 
 func ptr(f float64) *float64 { return &f }

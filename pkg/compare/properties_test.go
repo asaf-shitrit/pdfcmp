@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/internal/fixtures"
+	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
 )
 
 // writeFixture writes the named fixture from internal/fixtures into dir.

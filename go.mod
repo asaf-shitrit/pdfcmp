@@ -1,4 +1,4 @@
-module github.com/asafshitrit/pdfcmp
+module github.com/asaf-shitrit/pdfcmp
 
 go 1.24.4
 

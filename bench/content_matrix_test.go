@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/asafshitrit/pdfcmp/pkg/compare"
-	"github.com/asafshitrit/pdfcmp/pkg/content"
+	"github.com/asaf-shitrit/pdfcmp/pkg/compare"
+	"github.com/asaf-shitrit/pdfcmp/pkg/content"
 	"github.com/jung-kurt/gofpdf"
 )
 

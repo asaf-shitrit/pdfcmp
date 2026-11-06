@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/asafshitrit/pdfcmp/internal/fixtures"
+	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
 )
 
 func main() {
