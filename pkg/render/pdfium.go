@@ -17,6 +17,7 @@ import (
 	"github.com/tetratelabs/wazero"
 
 	"github.com/asaf-shitrit/pdfcmp/pkg/bytewise"
+	"github.com/asaf-shitrit/pdfcmp/pkg/content"
 )
 
 // pdfiumRenderer implements Renderer using PDFium WebAssembly
@@ -227,8 +228,10 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 					Count:      textChars,
 				})
 				if err == nil && textResp.Text != "" {
-					text = textResp.Text
-					textHash = bytewise.HashBytes([]byte(text))
+					text = content.Normalize(textResp.Text)
+					if text != "" {
+						textHash = bytewise.HashBytes([]byte(text))
+					}
 				}
 			}
 		}
