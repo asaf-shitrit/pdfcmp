@@ -3,6 +3,7 @@ package compare
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/asaf-shitrit/pdfcmp/pkg/visual"
@@ -26,6 +27,16 @@ type Result struct {
 
 	// PageResults contains per-page comparison results
 	PageResults []PageResult `json:"page_results,omitempty"`
+
+	// DeletedPages lists the pages of the first document that have no page
+	// in the second, in the first document's numbering. Set only when the
+	// documents' page counts differ.
+	DeletedPages []int `json:"deleted_pages,omitempty"`
+
+	// InsertedPages lists the pages of the second document that have no page
+	// in the first, in the second document's numbering. Set only when the
+	// documents' page counts differ.
+	InsertedPages []int `json:"inserted_pages,omitempty"`
 
 	// Metadata contains information about the compared files
 	Metadata Metadata `json:"metadata"`
@@ -94,8 +105,13 @@ type VisualResult struct {
 
 // PageResult contains comparison results for a single page
 type PageResult struct {
-	// Page is the 1-indexed page number
+	// Page is the 1-indexed page number in the first document
 	Page int `json:"page"`
+
+	// Page2 is the page's 1-indexed number in the second document. It is
+	// set when page counts differ and the pages were aligned; otherwise 0,
+	// and the page has the number Page in both documents.
+	Page2 int `json:"page2,omitempty"`
 
 	// Similarity is the page's similarity score (0.0 to 1.0): the lower of
 	// its visual and text similarity when both pages have text
@@ -171,8 +187,19 @@ type Metadata struct {
 	DurationMS int64 `json:"duration_ms"`
 }
 
-// DifferentPages returns a list of page numbers that differ significantly
+// DifferentPages returns the pages that differ, in the first document's
+// numbering: the changed pages, and the pages deleted from the first
+// document. Pages inserted in the second document have no number there; see
+// InsertedPages.
 func (r *Result) DifferentPages() []int {
+	pages := append(r.changedPages(), r.DeletedPages...)
+	slices.Sort(pages)
+	return pages
+}
+
+// changedPages returns the compared pages that differ, in the first
+// document's numbering.
+func (r *Result) changedPages() []int {
 	var pages []int
 	for _, pr := range r.PageResults {
 		if pr.IsDifferent {
@@ -182,10 +209,18 @@ func (r *Result) DifferentPages() []int {
 	return pages
 }
 
+// pagesAdded reports whether pages were deleted or inserted.
+func (r *Result) pagesAdded() bool {
+	return len(r.DeletedPages) > 0 || len(r.InsertedPages) > 0
+}
+
 // IsSimilar reports whether the documents are similar: the similarity score
 // reaches the threshold and, unless the comparison used TextChangeScored, no
 // page's text changed and, unless it turned tiles off, no page's tile changed.
 func (r *Result) IsSimilar(threshold float64) bool {
+	if r.pagesAdded() {
+		return false
+	}
 	if r.TextChanged && r.textMode == TextChangeFails {
 		return false
 	}
@@ -233,15 +268,30 @@ Visual Comparison: %.1f%% similar (%d pages compared)
 		r.VisualComparison.PagesCompared,
 	)
 
-	// Add modified pages if any
-	diffPages := r.DifferentPages()
-	if len(diffPages) > 0 {
-		summary += fmt.Sprintf("\nModified pages: %v", diffPages)
-	}
+	summary += r.pageLines()
 
 	summary += fmt.Sprintf("\nTime elapsed: %v", r.Duration.Round(time.Millisecond))
 
 	return summary
+}
+
+// pageLines lists the modified, deleted and inserted pages, one line each,
+// each line starting with a newline.
+func (r *Result) pageLines() string {
+	var lines string
+	if pages := r.changedPages(); len(pages) > 0 {
+		lines += fmt.Sprintf("\nModified pages: %v", pages)
+		if r.pagesAdded() {
+			lines += " (file 1 numbering)"
+		}
+	}
+	if len(r.DeletedPages) > 0 {
+		lines += fmt.Sprintf("\nDeleted pages (in file 1): %v", r.DeletedPages)
+	}
+	if len(r.InsertedPages) > 0 {
+		lines += fmt.Sprintf("\nInserted pages (in file 2): %v", r.InsertedPages)
+	}
+	return lines
 }
 
 func byteStatus(identical bool) string {

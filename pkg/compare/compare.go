@@ -208,6 +208,9 @@ func (c *comparer) visualStages(ctx context.Context, result *Result, pdf1, pdf2 
 	if c.pageCountStage(result, doc1, doc2) {
 		return nil
 	}
+	if doc1.PageCount() != doc2.PageCount() {
+		return c.alignStage(ctx, result, doc1, doc2)
+	}
 	if c.usesThumbnails() {
 		done, err := c.thumbnailStage(ctx, result, doc1, doc2)
 		if err != nil || done {
@@ -218,10 +221,8 @@ func (c *comparer) visualStages(ctx context.Context, result *Result, pdf1, pdf2 
 }
 
 // pageCountStage records both page counts. It decides the comparison when
-// both documents are empty, or when their page counts differ: a page missing
-// from one document has nothing to be similar to, so the documents score 0.
-// Pages are paired by index, and rendering past the shorter document would
-// only fail.
+// both documents are empty or only one is. Documents whose page counts differ
+// are left to alignStage, which pairs their pages by content.
 func (c *comparer) pageCountStage(result *Result, doc1, doc2 render.Document) bool {
 	n1, n2 := doc1.PageCount(), doc2.PageCount()
 	result.Metadata.Pages1, result.Metadata.Pages2 = n1, n2
@@ -234,10 +235,6 @@ func (c *comparer) pageCountStage(result *Result, doc1, doc2 render.Document) bo
 	case n1 == 0 || n2 == 0:
 		c.opts.Logger.Debug("One PDF has 0 pages", F("pages1", n1), F("pages2", n2))
 		result.setMismatch("empty document mismatch")
-		return true
-	case n1 != n2:
-		c.opts.Logger.Debug("Page counts differ", F("pages1", n1), F("pages2", n2))
-		result.setMismatch("page count mismatch")
 		return true
 	}
 	return false
@@ -346,23 +343,38 @@ func (c *comparer) samplePages(pageCount int) ([]int, string) {
 // text decides them are scored without rendering; the rest are rendered in
 // both documents and scored as soon as both renders of a page are ready.
 func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document, pages []int, opts render.Options) ([]PageResult, error) {
-	if len(pages) == 0 {
+	pairs := make([]pagePair, len(pages))
+	for i, p := range pages {
+		pairs[i] = pagePair{p, p}
+	}
+	return c.comparePairs(ctx, doc1, doc2, pairs, opts)
+}
+
+// pagePair is a page of the first document and the page of the second that
+// it is compared with, both 0-indexed.
+type pagePair struct{ p1, p2 int }
+
+// comparePairs is comparePages for pages that may sit at different indexes
+// in the two documents. Each result's Page is the pair's first-document page.
+func (c *comparer) comparePairs(ctx context.Context, doc1, doc2 render.Document, pairs []pagePair, opts render.Options) ([]PageResult, error) {
+	if len(pairs) == 0 {
 		return nil, nil
 	}
 
-	plan := c.planPages(doc1, doc2, pages)
+	plan := c.planPages(doc1, doc2, pairs)
 	if len(plan.render) == 0 {
 		return plan.results, nil
 	}
-	c.reportProgress("Pipelined processing", len(pages)-len(plan.render), len(pages), 0.3)
+	c.reportProgress("Pipelined processing", len(pairs)-len(plan.render), len(pairs), 0.3)
 
-	pageNums := make([]int, len(plan.render))
+	nums1 := make([]int, len(plan.render))
+	nums2 := make([]int, len(plan.render))
 	for j, i := range plan.render {
-		pageNums[j] = pages[i]
+		nums1[j], nums2[j] = pairs[i].p1, pairs[i].p2
 	}
-	err := c.renderPairs(ctx, doc1, doc2, pageNums, opts, func(j int, img1, img2 image.Image) {
+	err := c.renderPairs(ctx, doc1, doc2, nums1, nums2, opts, func(j int, img1, img2 image.Image) {
 		i := plan.render[j]
-		plan.results[i] = c.scorePage(pages[i], img1, img2, plan.infos[i], plan.textSims[i])
+		plan.results[i] = c.scorePage(pairs[i].p1, img1, img2, plan.infos[i], plan.textSims[i])
 	})
 	if err != nil {
 		return nil, err
@@ -371,7 +383,7 @@ func (c *comparer) comparePages(ctx context.Context, doc1, doc2 render.Document,
 }
 
 // pagePlan is what comparePages knows about each page before rendering.
-// results, infos and textSims are indexed like comparePages' pages.
+// results, infos and textSims are indexed like comparePairs' pairs.
 type pagePlan struct {
 	results  []PageResult   // filled in now for pages that text decides
 	render   []int          // indexes of the pages still to render
@@ -383,19 +395,19 @@ type pagePlan struct {
 // about 16x faster than rendering. A page that text decides is scored now;
 // every other page is scheduled for rendering, with its text similarity
 // scored now so that rendering workers never call back into the PDF engine.
-func (c *comparer) planPages(doc1, doc2 render.Document, pages []int) pagePlan {
+func (c *comparer) planPages(doc1, doc2 render.Document, pairs []pagePair) pagePlan {
 	plan := pagePlan{
-		results:  make([]PageResult, len(pages)),
-		infos:    make([]pageInfoPair, len(pages)),
-		textSims: make([]*float64, len(pages)),
+		results:  make([]PageResult, len(pairs)),
+		infos:    make([]pageInfoPair, len(pairs)),
+		textSims: make([]*float64, len(pairs)),
 	}
-	for i, pageNum := range pages {
-		info1, err1 := doc1.PageInfo(pageNum)
-		info2, err2 := doc2.PageInfo(pageNum)
+	for i, pr := range pairs {
+		info1, err1 := doc1.PageInfo(pr.p1)
+		info2, err2 := doc2.PageInfo(pr.p2)
 		ok := err1 == nil && err2 == nil
 
-		if ok && textDecides(info1, info2) && contentMatches(doc1, doc2, pageNum) {
-			plan.results[i] = PageResult{Page: pageNum + 1, Similarity: 1.0}
+		if ok && textDecides(info1, info2) && contentMatches(doc1, doc2, pr) {
+			plan.results[i] = PageResult{Page: pr.p1 + 1, Similarity: 1.0}
 			continue
 		}
 		if ok {
@@ -408,11 +420,11 @@ func (c *comparer) planPages(doc1, doc2 render.Document, pages []int) pagePlan {
 	return plan
 }
 
-// contentMatches reports whether both documents' page has the same content
+// contentMatches reports whether the pair's two pages have the same content
 // hash. A hash error counts as no match, so the page is rendered.
-func contentMatches(doc1, doc2 render.Document, pageNum int) bool {
-	h1, err1 := doc1.ContentHash(pageNum)
-	h2, err2 := doc2.ContentHash(pageNum)
+func contentMatches(doc1, doc2 render.Document, pr pagePair) bool {
+	h1, err1 := doc1.ContentHash(pr.p1)
+	h2, err2 := doc2.ContentHash(pr.p2)
 	return err1 == nil && err2 == nil && h1 == h2
 }
 
@@ -424,20 +436,20 @@ func textDecides(info1, info2 render.PageInfo) bool {
 	return info1.TextHash != 0 && info1.TextHash == info2.TextHash && info1.ObjectCount == info2.ObjectCount
 }
 
-// renderPairs renders pageNums in both documents and calls score with each
-// page's two renders as soon as both are ready, from up to the
-// memory-adjusted worker count of goroutines at once. j is the page's index
-// in pageNums. A page that fails to render in either document is not scored;
+// renderPairs renders nums1 in the first document and nums2 in the second,
+// page j of one against page j of the other, and calls score with each
+// pair's two renders as soon as both are ready, from up to the
+// memory-adjusted worker count of goroutines at once. j is the pair's index. A page that fails to render in either document is not scored;
 // the errors are returned together once every page is done. When one
 // document's stream fails outright, the other stops rendering too.
 //
 // Memory is not bounded: a render waits in the pairer until the other
 // document's render of the same page arrives, so a document that renders
 // much faster can hold most of its pages there.
-func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, pageNums []int, opts render.Options, score func(j int, img1, img2 image.Image)) error {
+func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, nums1, nums2 []int, opts render.Options, score func(j int, img1, img2 image.Image)) error {
 	workers := c.adjustWorkersForMemory(doc1)
 	// Twice the workers lets rendering run ahead of scoring.
-	bufferSize := min(workers*2, len(pageNums))
+	bufferSize := min(workers*2, len(nums1))
 	renderCtx, stopRendering := context.WithCancel(ctx)
 	defer stopRendering()
 	pairer := &pagePairer{renders: map[int]*[2]image.Image{}, jobs: make(chan int, bufferSize)}
@@ -457,6 +469,7 @@ func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, 
 	streamErrCh := make(chan error, 2)
 	var receivers sync.WaitGroup
 	for d, doc := range []render.Document{doc1, doc2} {
+		pageNums := [][]int{nums1, nums2}[d]
 		out := make(chan render.RenderedPage, bufferSize)
 		go func() {
 			if err := doc.RenderPagesStream(renderCtx, pageNums, opts, out); err != nil {
@@ -598,7 +611,7 @@ func (c *comparer) scorePage(pageNum int, img1, img2 image.Image, info pageInfoP
 	r.TextSimilarity = textSim
 	r.TextChanged = textChanged(info)
 	if c.useTiles(info) {
-		applyTiles(&r, img1, img2)
+		applyTiles(&r, img1, img2, isScan(info))
 	}
 	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold ||
 		(r.TextChanged && c.opts.TextChange == TextChangeFails) ||
@@ -637,18 +650,43 @@ func (c *comparer) useTiles(info pageInfoPair) bool {
 	return c.opts.Tiles && !textChanged(info)
 }
 
+// isScan reports whether both pages are images with no text of their own,
+// which is what a scan is: pages whose renders differ by a rescan's shift,
+// lean and exposure rather than by an edit.
+func isScan(info pageInfoPair) bool {
+	return info.ok && info.info1.TextChars == 0 && info.info2.TextChars == 0
+}
+
+// scanHashFloor is the lowest hash similarity at which a scan page that
+// its aligned tiles find unchanged still passes. A rescan moves a few bits of
+// the whole-page hashes, which reduce the page to 9x8 or 32x32 samples; a
+// different page moves many more.
+const scanHashFloor = 0.85
+
 // applyTiles records the page's worst tile and whether it changed. Like a
 // text change, a changed tile decides the verdict and leaves Similarity
 // alone: the score says how much of the page changed, and a stamp is a small
 // part of it, though the hashes cannot see it.
-func applyTiles(r *PageResult, img1, img2 image.Image) {
-	diff, tile := visual.TileDiff(img1, img2)
+//
+// A scan page is cut after undoing the shift, lean and exposure of a rescan
+// (see visual.AlignedTileDiff). When its tiles then agree, the hashes' drop
+// below the threshold, down to scanHashFloor, is that same rescan noise and
+// the page scores as its tiles do.
+func applyTiles(r *PageResult, img1, img2 image.Image, scan bool) {
+	tileDiff := visual.TileDiff
+	if scan {
+		tileDiff = visual.AlignedTileDiff
+	}
+	diff, tile := tileDiff(img1, img2)
 	if tile == nil {
 		return
 	}
 	sim := visual.TileScore(diff)
 	r.TileSimilarity, r.WorstTile = &sim, tile
 	r.TileChanged = diff > visual.TileTolerance
+	if scan && !r.TileChanged && r.Similarity >= scanHashFloor {
+		r.Similarity = math.Max(r.Similarity, sim)
+	}
 }
 
 // cascadeHashes runs dHash, then pHash only when dHash finds the pages at

@@ -3,11 +3,13 @@ package compare
 import (
 	"context"
 	"image"
+	"math"
 	"path/filepath"
 	"testing"
 
 	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
 	"github.com/asaf-shitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/pkg/visual"
 )
 
 func TestTilesOption(t *testing.T) {
@@ -45,13 +47,13 @@ func TestApplyTiles(t *testing.T) {
 	same1, same2 := halves(false)
 	edit1, edit2 := halves(true)
 	r := PageResult{Similarity: 0.99}
-	applyTiles(&r, same1, same2)
+	applyTiles(&r, same1, same2, false)
 	if r.Similarity != 0.99 || r.TileSimilarity == nil || *r.TileSimilarity != 1 || r.WorstTile == nil || r.TileChanged {
 		t.Errorf("same pages: %+v, want a tile score of 1 and no change", r)
 	}
 
 	r = PageResult{Similarity: 0.99}
-	applyTiles(&r, edit1, edit2)
+	applyTiles(&r, edit1, edit2, false)
 	if r.TileSimilarity == nil || *r.TileSimilarity >= 0.95 || !r.TileChanged {
 		t.Errorf("edited page: tile %v, changed %v, want a tile score below 0.95 and a change", r.TileSimilarity, r.TileChanged)
 	}
@@ -60,7 +62,7 @@ func TestApplyTiles(t *testing.T) {
 	}
 
 	r = PageResult{Similarity: 0.99}
-	applyTiles(&r, image.NewGray(image.Rect(0, 0, 8, 8)), image.NewGray(image.Rect(0, 0, 8, 8)))
+	applyTiles(&r, image.NewGray(image.Rect(0, 0, 8, 8)), image.NewGray(image.Rect(0, 0, 8, 8)), false)
 	if r.TileSimilarity != nil || r.WorstTile != nil || r.TileChanged {
 		t.Errorf("page too small for tiles: %+v, want no tile score", r)
 	}
@@ -119,6 +121,148 @@ func scanPDF(t *testing.T, path string, quality, stampAt, swapAt int) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// rescanPDF writes pages as scanned again at a rescan level, page stampAt
+// (0-based, -1 for none) with a stamp on it and page swapAt a different scan.
+func rescanPDF(t *testing.T, path string, page func(seed int64) image.Image, level fixtures.RescanLevel, stampAt, swapAt int) {
+	t.Helper()
+	err := fixtures.Scans(path, 3, 92, func(p int) image.Image {
+		img := page(int64(p))
+		switch {
+		case p == swapAt:
+			img = page(1000)
+		case p == stampAt:
+			img = fixtures.StampImage(img, 600, 900, 120, 60)
+		}
+		return fixtures.Rescan(img, int64(p)+40, level)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A second scan of the same paper, shifted, leaning, re-exposed and noisier,
+// is the same document; a stamp on it or a swapped page is not.
+func TestRescansEndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("renders scan pages")
+	}
+	for name, page := range map[string]func(int64) image.Image{"soft": fixtures.ScanImage, "text": fixtures.TextScanImage} {
+		t.Run(name, func(t *testing.T) { testRescans(t, page) })
+	}
+}
+
+func testRescans(t *testing.T, page func(seed int64) image.Image) {
+	dir := t.TempDir()
+	orig := filepath.Join(dir, "orig.pdf")
+	if err := fixtures.Scans(orig, 3, 92, func(p int) image.Image { return page(int64(p)) }); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name          string
+		level         fixtures.RescanLevel
+		stamp, swap   int
+		wantDifferent int // 1-based page expected to be different, 0 for none
+	}{
+		{"light rescan", fixtures.RescanLight, -1, -1, 0},
+		{"medium rescan", fixtures.RescanMedium, -1, -1, 0},
+		{"heavy rescan", fixtures.RescanHeavy, -1, -1, 0},
+		{"heavy rescan with a stamp", fixtures.RescanHeavy, 1, -1, 2},
+		{"heavy rescan with a swapped page", fixtures.RescanHeavy, -1, 2, 3},
+	} {
+		other := filepath.Join(dir, "other.pdf")
+		rescanPDF(t, other, page, tc.level, tc.stamp, tc.swap)
+		cmp, err := New(WithSampling(SamplingAll))
+		if err != nil {
+			t.Fatal(err)
+		}
+		res, err := cmp.Compare(context.Background(), orig, other)
+		cmp.Close()
+		if err != nil {
+			t.Fatal(err)
+		}
+		flagged := 0
+		worst := 0.0
+		for _, p := range res.PageResults {
+			if p.IsDifferent {
+				flagged = p.Page
+			}
+			if p.TileSimilarity != nil {
+				worst = math.Max(worst, (1-*p.TileSimilarity)*visual.TileScale)
+			}
+		}
+		t.Logf("%s: score %.4f, worst tile diff %.1f, flagged page %d", tc.name, res.SimilarityScore, worst, flagged)
+		if res.IsSimilar(DefaultSimilarityThreshold) == (tc.wantDifferent != 0) || flagged != tc.wantDifferent {
+			t.Errorf("%s: score %.4f, flagged page %d, want page %d", tc.name, res.SimilarityScore, flagged, tc.wantDifferent)
+		}
+	}
+}
+
+func TestIsScan(t *testing.T) {
+	pair := func(c1, c2 int, ok bool) pageInfoPair {
+		return pageInfoPair{info1: render.PageInfo{TextChars: c1}, info2: render.PageInfo{TextChars: c2}, ok: ok}
+	}
+	for _, tc := range []struct {
+		name string
+		info pageInfoPair
+		want bool
+	}{
+		{"no text", pair(0, 0, true), true},
+		{"text on one", pair(0, 5, true), false},
+		{"text on both", pair(5, 5, true), false},
+		{"no page info", pair(0, 0, false), false},
+	} {
+		if got := isScan(tc.info); got != tc.want {
+			t.Errorf("%s: isScan = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// shiftedHalves are two portrait pages of a vertical ramp, the second moved
+// down by 4 px: what a rescan does, and what a text page edit looks like.
+func shiftedHalves() (image.Image, image.Image) {
+	a, b := image.NewGray(image.Rect(0, 0, 840, 1188)), image.NewGray(image.Rect(0, 0, 840, 1188))
+	for y := 0; y < 1188; y++ {
+		for x := 0; x < 840; x++ {
+			a.Pix[y*a.Stride+x] = uint8(60 + (x/37*53+y/41*29)%140)
+			b.Pix[y*b.Stride+x] = uint8(60 + (x/37*53+(y-4)/41*29)%140)
+		}
+	}
+	return a, b
+}
+
+// A scan page is checked after undoing a rescan's shift and exposure; any
+// other page is checked as it is. A scan page whose tiles agree passes with
+// a hash score above the floor, and not below it.
+func TestApplyTilesScan(t *testing.T) {
+	a, b := shiftedHalves()
+	r := PageResult{Similarity: 0.99}
+	applyTiles(&r, a, b, false)
+	if !r.TileChanged {
+		t.Errorf("text page shifted by 4 px: tile diff %v, want a change", (1-*r.TileSimilarity)*visual.TileScale)
+	}
+	for _, tc := range []struct {
+		hash, want float64
+	}{{0.91, 0.91}, {0.84, 0.84}} {
+		r = PageResult{Similarity: tc.hash}
+		applyTiles(&r, a, b, true)
+		if r.TileChanged || r.TileSimilarity == nil {
+			t.Fatalf("scan shifted by 4 px: %+v, want it unchanged", r)
+		}
+		wantRaised := tc.hash >= scanHashFloor
+		if raised := r.Similarity > tc.hash; raised != wantRaised {
+			t.Errorf("hash %.2f: similarity %.4f, raised = %v, want %v", tc.hash, r.Similarity, raised, wantRaised)
+		}
+	}
+	// a changed scan keeps its hash score
+	_, edit := halves(true)
+	flat, _ := halves(false)
+	r = PageResult{Similarity: 0.9}
+	applyTiles(&r, flat, edit, true)
+	if !r.TileChanged || r.Similarity != 0.9 {
+		t.Errorf("edited scan: %+v, want a changed tile and the hash score kept", r)
 	}
 }
 
