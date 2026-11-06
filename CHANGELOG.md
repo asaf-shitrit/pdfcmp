@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-06
+
+v0.2.0, tagged earlier the same day, has everything below except page alignment, text normalisation and the rescan tile check (`AlignedTileDiff`).
+
 ### Added
 - Page alignment: when page counts differ, pages are aligned by their text (by object count and content hash when a page has none) instead of the comparison stopping at "page count mismatch". `Result.DeletedPages` and `InsertedPages` (`deleted_pages`, `inserted_pages`) name the pages with no counterpart, `PageResult.Page2` (`page2`) the aligned page in the second file, and every aligned pair is compared by the usual rules. `DifferentPages` includes deleted pages. `fixtures.Sequence` and `fixtures.Redrawn`.
 - Tile check: each rendered page is cut into a 64x90 grid (swapped for landscape) and the tiles' mean grey levels are compared. A page whose worst tile moves by more than 6 grey levels (`visual.TileTolerance`) is different (`tile_changed`), so a small local edit such as a stamp on a scan is no longer lost in the whole-page hashes. Like a text change it decides the verdict and leaves `Similarity` alone. Pages whose text changed are left to the text rule. `visual.TileDiff`, `visual.TileSimilarity`, `WithTiles` option, `--no-tiles` flag, and `PageResult.TileSimilarity`, `WorstTile`, `TileChanged` and `Result.TileChanged` (`tile_similarity`, `worst_tile`, `tile_changed` in JSON).
