@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/asafshitrit/pdfcmp/pkg/visual"
+	"github.com/asaf-shitrit/pdfcmp/pkg/visual"
 )
 
 // Result represents the complete comparison result

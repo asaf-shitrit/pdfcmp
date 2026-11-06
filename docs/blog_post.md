@@ -191,4 +191,4 @@ models for “semantic” similarity—knowing that two documents are about the 
 thing even if their visual layout is different.
 
 You can find the source code, the benchmark suite, and the CLI on GitHub:
-[github.com/asafshitrit/pdfcmp](https://github.com/asafshitrit/pdfcmp).
+[github.com/asaf-shitrit/pdfcmp](https://github.com/asaf-shitrit/pdfcmp).

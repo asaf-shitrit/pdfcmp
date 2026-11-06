@@ -16,7 +16,7 @@ import (
 	"github.com/klippa-app/go-pdfium/webassembly"
 	"github.com/tetratelabs/wazero"
 
-	"github.com/asafshitrit/pdfcmp/pkg/bytewise"
+	"github.com/asaf-shitrit/pdfcmp/pkg/bytewise"
 )
 
 // pdfiumRenderer implements Renderer using PDFium WebAssembly

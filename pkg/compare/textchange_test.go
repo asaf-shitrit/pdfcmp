@@ -5,7 +5,7 @@ import (
 	"hash/fnv"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
 )
 
 // textDoc is a fakeDoc whose pages report text. A page missing from text has

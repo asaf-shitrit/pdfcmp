@@ -9,8 +9,8 @@ import (
 	"os"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/pkg/bytewise"
-	"github.com/asafshitrit/pdfcmp/pkg/visual"
+	"github.com/asaf-shitrit/pdfcmp/pkg/bytewise"
+	"github.com/asaf-shitrit/pdfcmp/pkg/visual"
 )
 
 // ============================================================================

@@ -10,7 +10,7 @@ import (
 	"testing"
 	"text/tabwriter"
 
-	"github.com/asafshitrit/pdfcmp/pkg/visual"
+	"github.com/asaf-shitrit/pdfcmp/pkg/visual"
 	"github.com/nfnt/resize"
 )
 

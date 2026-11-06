@@ -6,8 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/internal/fixtures"
-	"github.com/asafshitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
 )
 
 func TestTilesOption(t *testing.T) {

@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/internal/fixtures"
-	"github.com/asafshitrit/pdfcmp/pkg/compare"
+	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
+	"github.com/asaf-shitrit/pdfcmp/pkg/compare"
 	"github.com/jung-kurt/gofpdf"
 )
 

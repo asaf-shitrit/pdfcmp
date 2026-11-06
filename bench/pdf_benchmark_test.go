@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/asafshitrit/pdfcmp/pkg/compare"
-	"github.com/asafshitrit/pdfcmp/pkg/render"
-	"github.com/asafshitrit/pdfcmp/pkg/visual"
+	"github.com/asaf-shitrit/pdfcmp/pkg/compare"
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/pkg/visual"
 )
 
 const fixturesDir = "fixtures"

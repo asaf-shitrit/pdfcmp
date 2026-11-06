@@ -6,7 +6,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/asafshitrit/pdfcmp/pkg/render"
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
 )
 
 func TestGenerate(t *testing.T) {
