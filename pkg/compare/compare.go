@@ -611,7 +611,7 @@ func (c *comparer) scorePage(pageNum int, img1, img2 image.Image, info pageInfoP
 	r.TextSimilarity = textSim
 	r.TextChanged = textChanged(info)
 	if c.useTiles(info) {
-		applyTiles(&r, img1, img2)
+		applyTiles(&r, img1, img2, isScan(info))
 	}
 	r.IsDifferent = r.Similarity < c.opts.SimilarityThreshold ||
 		(r.TextChanged && c.opts.TextChange == TextChangeFails) ||
@@ -650,18 +650,43 @@ func (c *comparer) useTiles(info pageInfoPair) bool {
 	return c.opts.Tiles && !textChanged(info)
 }
 
+// isScan reports whether both pages are images with no text of their own,
+// which is what a scan is: pages whose renders differ by a rescan's shift,
+// lean and exposure rather than by an edit.
+func isScan(info pageInfoPair) bool {
+	return info.ok && info.info1.TextChars == 0 && info.info2.TextChars == 0
+}
+
+// scanHashFloor is the lowest hash similarity at which a scan page that
+// its aligned tiles find unchanged still passes. A rescan moves a few bits of
+// the whole-page hashes, which reduce the page to 9x8 or 32x32 samples; a
+// different page moves many more.
+const scanHashFloor = 0.85
+
 // applyTiles records the page's worst tile and whether it changed. Like a
 // text change, a changed tile decides the verdict and leaves Similarity
 // alone: the score says how much of the page changed, and a stamp is a small
 // part of it, though the hashes cannot see it.
-func applyTiles(r *PageResult, img1, img2 image.Image) {
-	diff, tile := visual.TileDiff(img1, img2)
+//
+// A scan page is cut after undoing the shift, lean and exposure of a rescan
+// (see visual.AlignedTileDiff). When its tiles then agree, the hashes' drop
+// below the threshold, down to scanHashFloor, is that same rescan noise and
+// the page scores as its tiles do.
+func applyTiles(r *PageResult, img1, img2 image.Image, scan bool) {
+	tileDiff := visual.TileDiff
+	if scan {
+		tileDiff = visual.AlignedTileDiff
+	}
+	diff, tile := tileDiff(img1, img2)
 	if tile == nil {
 		return
 	}
 	sim := visual.TileScore(diff)
 	r.TileSimilarity, r.WorstTile = &sim, tile
 	r.TileChanged = diff > visual.TileTolerance
+	if scan && !r.TileChanged && r.Similarity >= scanHashFloor {
+		r.Similarity = math.Max(r.Similarity, sim)
+	}
 }
 
 // cascadeHashes runs dHash, then pHash only when dHash finds the pages at

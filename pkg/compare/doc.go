@@ -64,6 +64,16 @@
 // quality does not trip it. Pages whose text changed are left to the text
 // rule. Turn tiles off with WithTiles(false).
 //
+// A second scan of the same paper is not the same picture: it sits a few
+// pixels off, leans, and is exposed differently. When both pages have no text
+// of their own (a scan), the tiles are therefore compared after fitting the
+// second page's exposure to the first's, undoing the shift and lean between
+// them, and matching each tile against the closest tile within a pixel or two
+// of where it should be, in both directions (visual.AlignedTileDiff). A scan
+// page whose tiles then agree is not failed by a hash score of 0.85 to 0.95,
+// the few bits that blur and resampling move; it scores as its tiles do. Pages
+// with text are compared tile for tile, as a content move there is a change.
+//
 // # Text Similarity
 //
 // Perceptual hashes record where text sits on a page, not what it says. When

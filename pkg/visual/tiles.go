@@ -18,7 +18,12 @@ const (
 	// quality 92 and 50 moved no tile by more than 2.1 grey levels at 72, 150
 	// and 300 DPI, while a stamp of 60x30 px or more on an 840x1188 px scan
 	// moved one tile by at least 16 (TestTileSeparation checks the same split
-	// on decoded JPEGs).
+	// on decoded JPEGs). A second scan of the same paper, shifted by up to
+	// 6 px, leaning by up to a degree, exposed 8% differently, blurred and
+	// noisier, moves no tile of the aligned check (AlignedTileDiff) by more
+	// than 3.4 on soft pages or pages of text (TestAlignedTileSeparation),
+	// while a 6 px dot, a 30 px long 2 px line or a 20x20 px tick moves one by
+	// more than 6; marks as large as 40x40 px move one by more than 20.
 	TileTolerance = 6.0
 
 	// TileScale is the difference that scores a tile 0. A tile scores
