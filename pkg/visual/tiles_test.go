@@ -5,6 +5,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"math"
 	"math/rand"
 	"testing"
 
@@ -154,6 +155,89 @@ func TestTileSeparation(t *testing.T) {
 	if highestStamp > threshold-margin {
 		t.Errorf("a stamp scored %.4f, want at most %.4f", highestStamp, threshold-margin)
 	}
+}
+
+// TestAlignedTileSeparation is the held-out check behind TileTolerance for
+// rescans: a scan against a simulated second scan of it (shifted, rotated,
+// re-exposed, blurred, noisier, re-encoded: fixtures.Rescan) at every
+// strength, over two soft scans and two scans of text, against heavy rescans of marked pages, each mark at three places. Every
+// rescan must pass with room to spare and every mark but the thin ones fail
+// with room to spare. The thin ones, which the check is not expected to
+// catch, are only logged.
+func TestAlignedTileSeparation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("builds several scan pages")
+	}
+	const (
+		threshold = 0.95
+		margin    = 0.005
+	)
+	pt := image.Pt
+	type mark struct {
+		name string
+		must bool
+		draw func(img image.Image, x, y int) image.Image
+	}
+	marks := []mark{
+		{"stamp 120x60", true, func(b image.Image, x, y int) image.Image { return fixtures.StampImage(b, x, y, 120, 60) }},
+		{"stamp 60x30", true, func(b image.Image, x, y int) image.Image { return fixtures.StampImage(b, x, y, 60, 30) }},
+		{"tick 40x40, 3 px", true, func(b image.Image, x, y int) image.Image {
+			return fixtures.MarkImage(b, 3, pt(x, y), pt(x+15, y+40), pt(x+40, y))
+		}},
+		{"stroke 60 px, 3 px", true, func(b image.Image, x, y int) image.Image {
+			return fixtures.MarkImage(b, 3, pt(x, y), pt(x+20, y-20), pt(x+40, y+10), pt(x+60, y-15))
+		}},
+		{"dot 12 px", true, func(b image.Image, x, y int) image.Image { return fixtures.MarkImage(b, 12, pt(x, y), pt(x, y)) }},
+		{"line 150x2 px", false, func(b image.Image, x, y int) image.Image { return fixtures.MarkImage(b, 2, pt(x, y), pt(x+150, y)) }},
+		{"tick 40x40, 2 px", false, func(b image.Image, x, y int) image.Image {
+			return fixtures.MarkImage(b, 2, pt(x, y), pt(x+15, y+40), pt(x+40, y))
+		}},
+	}
+	levels := []fixtures.RescanLevel{fixtures.RescanLight, fixtures.RescanMedium, fixtures.RescanHeavy}
+	diffTo := func(ref, other image.Image) float64 {
+		d, _ := AlignedTileDiff(ref, other)
+		return d
+	}
+
+	worstRescan := 0.0
+	weakest := make([]float64, len(marks))
+	for i := range weakest {
+		weakest[i] = math.MaxFloat64
+	}
+	rng := rand.New(rand.NewSource(5))
+	for seed := int64(1); seed <= 4; seed++ {
+		base := fixtures.ScanImage(seed)
+		if seed%2 == 0 { // soft pages and sharp pages of text
+			base = fixtures.TextScanImage(seed)
+		}
+		ref := jpegRoundTrip(t, base, 92)
+		for _, lv := range levels {
+			worstRescan = math.Max(worstRescan, diffTo(ref, fixtures.Rescan(base, seed+10, lv)))
+		}
+		// each mark at three places, on light, dark and sloping paper
+		for n := 0; n < 3; n++ {
+			x, y := 60+rng.Intn(640), 60+rng.Intn(1000)
+			for i, m := range marks {
+				weakest[i] = math.Min(weakest[i], diffTo(ref, fixtures.Rescan(m.draw(base, x, y), seed+10, fixtures.RescanHeavy)))
+			}
+		}
+	}
+	t.Logf("closest rescan: tile diff %.2f (score %.4f)", worstRescan, TileScore(worstRescan))
+	if s := TileScore(worstRescan); s < threshold+margin {
+		t.Errorf("a rescan scored %.4f, want at least %.4f", s, threshold+margin)
+	}
+	closest := math.MaxFloat64
+	for i, m := range marks {
+		t.Logf("weakest %-20s tile diff %5.2f (score %.4f), caught %v", m.name, weakest[i], TileScore(weakest[i]), weakest[i] > TileTolerance)
+		if !m.must {
+			continue
+		}
+		closest = math.Min(closest, weakest[i])
+		if s := TileScore(weakest[i]); s > threshold-margin {
+			t.Errorf("%s scored %.4f, want at most %.4f", m.name, s, threshold-margin)
+		}
+	}
+	t.Logf("margin: closest rescan %.2f, closest required mark %.2f, tolerance %.1f", worstRescan, closest, TileTolerance)
 }
 
 // Every image type gives the tiles of its grey conversion, give or take the
