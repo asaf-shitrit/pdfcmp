@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Rendered pages are now freed. PDFium's WebAssembly build renders into its own memory and every page stayed allocated, so memory grew with page count: comparing two 600-page documents peaked at 3.4 GB. Renders are copied out and released, and pages waiting for the other document's render of the same page are capped at the worker count plus one. The same comparison now peaks at 1.5 GB with the defaults (7 workers at 150 DPI on A4 under `--memory 512`) and 0.8 GB with `--workers 4`, 1.6 GB at 1500 pages, and runs in 6.5 s instead of 20 s on a 10-core M-series Mac.
+- Comparisons no longer fail with "Timeout waiting for idle object" when the PDFium pool is busy. A document's render stream renders on the document's own instance and borrows more only while they are free, and comparisons run at once wait for a free pair of instances (`render.PoolSize` / 2) instead of opening their first document and waiting 30 s for the second. Opening a document waits on the comparison's context, so `--timeout` and Ctrl-C also stop a comparison waiting for the pool; a second Ctrl-C kills one slow to stop.
+- `--workers` and `--memory` now limit rendering, not only scoring. `--memory` counts 8 renders per worker, which is what the pipeline holds at most.
+- A data race between PDFium instances, reported by `go test -race` inside wazero.
+- `pdfcmp quick` exits with `1` when the files differ; it exited `0` either way.
+- The text summary's status uses `--threshold`, not the 0.95 default, so it agrees with the exit code.
+- Comparing a file with itself reports its size and an identical byte comparison instead of "0 pages, 0 B" and "Byte Comparison: DIFFERENT".
+- `pdfcmp version` printed `v0.1.0`; it prints the build's version, set by `make build` from `git describe`, or the module version `go install` records.
+- `render`'s `RenderPages` stops and waits for its stream on the first page error, instead of leaving it rendering after it returns.
+- An open error names the file once: `failed to open PDF a.pdf: 3: incorrect format`.
+- Annotations and form fields are rendered, as viewers draw them: comments, stamps, filled-in and comb fields were invisible to the comparison, and a form flattened by another tool differed from the original in every field.
+- A page's content hash covers images inside form objects, where LaTeX and other writers put included figures, and the page's annotations. A replaced figure or an added stamp annotation left the hash alone, so the page was taken as unchanged without being rendered.
+- A document written again by another tool is no longer different because its text runs come out in another order, with spaces in other places, or with glyphs mapped to other symbols (Ghostscript turns bullets into "ï" or "¥" and broken encodings into control characters): two pages carry the same text when the letters and digits on them are the same (`render.PageInfo.TextBag`, `content.Bag`). Text that moved, and a change confined to punctuation, symbols or Latin-1 letters, are the render's to judge.
+- A page printed to an image, or a scan given an OCR layer, against the same page with text is judged by its render: a page with text against one without is no longer a text change.
+- A text change no render can show, such as hidden text or text turned into outlines, is no longer a difference: a page whose text differs but whose renders are the same picture (`visual.ChangedPixels` finds no pixel off by 64 levels or more) has the same text.
+- Born-digital pages are checked for ink that appeared or disappeared (`visual.InkDiff`) instead of by tile means, which a sub-pixel move of a line of text, a hairline drawn heavier or a grey form-field border moved past the tolerance. A changed tile mean of more than 30 grey levels still makes a page different, for edits inside photos, where nothing is flat. When the tiles find no change, a hash score down to 0.85 passes the page, as it already did for scans.
+
+### Changed
+- Exit code `2`, not `1`, means the files could not be compared: errors are told apart from differences, as with `cmp` and `diff`. Usage is printed only for usage errors.
+- `--format` accepts only `text` and `json`.
+- Dependencies: `golang.org/x/text` v0.43.0 fixes GO-2026-5970, an infinite loop on invalid input that `content.Normalize` reached with a PDF's text; `go-pdfium` v1.21.4 and `wazero` v1.12.0. The module needs Go 1.26.
+
+### Added
+- `bench/realworld`, a benchmark built from real documents: IRS forms and arXiv papers with their real revisions, two long manuals, and web PDFs and scans from Hugging Face `pixparse/pdfa-eng-wds` and `pixparse/idl-wds`, each re-saved, rasterised, re-scanned or edited (a digit, a word, two swapped digits, a pen tick, a stamp, a photo, a page). It runs pdfcmp, red6 PDFCompare, pdf-visual-diff, diff-pdf, diff-pdf-visually, pdf-diff, `pdftotext` with `diff` and ImageMagick `compare` on every pair. On 1,007 held-out pairs pdfcmp scores 93.0%, the next tool (PDFCompare) 84.1%; see its README.
+- `visual.InkDiff`, `InkScore`, `ChangedPixels` and their constants.
+- `--timeout` for `compare`, and `pdfcmp --version`.
+- `render.Options.Workers`, the most pages `RenderPagesStream` renders at once, and `render.PoolSize`.
+- `render.ContextOpener`, implemented by the PDFium renderer's `OpenContext`.
+
 ## [0.3.0] - 2026-11-06
 
 v0.2.0, tagged earlier the same day, has everything below except page alignment, text normalisation and the rescan tile check (`AlignedTileDiff`).

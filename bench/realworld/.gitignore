@@ -1,0 +1,15 @@
+# Downloaded documents, generated variants, results and tool installs.
+src/
+hf/
+cases/
+cases_hf/
+cases*.json
+res*.json
+node_modules/
+package*.json
+venv/
+hf2/
+cases_ho/
+hf3/
+cases_h3/
+tools/
