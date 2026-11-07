@@ -25,7 +25,7 @@ func HashFile(path string) (HashResult, error) {
 	if err != nil {
 		return HashResult{}, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	// Get file size
 	stat, err := f.Stat()

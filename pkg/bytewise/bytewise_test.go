@@ -13,9 +13,11 @@ func TestCompare(t *testing.T) {
 	f2 := filepath.Join(tmpDir, "f2")
 	f3 := filepath.Join(tmpDir, "f3")
 
-	os.WriteFile(f1, []byte("hello world"), 0644)
-	os.WriteFile(f2, []byte("hello world"), 0644)
-	os.WriteFile(f3, []byte("hello world!"), 0644)
+	for path, data := range map[string]string{f1: "hello world", f2: "hello world", f3: "hello world!"} {
+		if err := os.WriteFile(path, []byte(data), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
 
 	t.Run("Identical", func(t *testing.T) {
 		res, err := Compare(f1, f2)

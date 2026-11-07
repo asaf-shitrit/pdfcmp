@@ -68,3 +68,17 @@ func TestNormalizeEmpty(t *testing.T) {
 		}
 	}
 }
+
+func TestBag(t *testing.T) {
+	if Bag("be perfect\nThe Law") != Bag("The Law beperfect") {
+		t.Error("reordered runs and moved spaces change the bag")
+	}
+	if Bag("• item 1200") != Bag("ï item 1200") || Bag("a\x05b") != Bag("ab") {
+		t.Error("a glyph mapped to another symbol, or a control character, changes the bag")
+	}
+	for _, other := range []string{"The Law be perfekt", "The Law be perfec", "The Law be perfect 2", "Закон"} {
+		if Bag("be perfect The Law") == Bag(other) {
+			t.Errorf("%q has the same bag", other)
+		}
+	}
+}

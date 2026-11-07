@@ -61,6 +61,11 @@ type Result struct {
 
 	// textMode is the comparer's TextChangeMode, which IsSimilar applies
 	textMode TextChangeMode
+
+	// threshold is the comparer's SimilarityThreshold, which Summary's
+	// status applies; hasThreshold is false on a Result made elsewhere
+	threshold    float64
+	hasThreshold bool
 }
 
 // ByteResult contains byte-wise comparison results
@@ -241,17 +246,21 @@ func (r *Result) JSON() (string, error) {
 
 // Summary returns a human-readable summary of the comparison
 func (r *Result) Summary() string {
+	threshold := DefaultSimilarityThreshold
+	if r.hasThreshold {
+		threshold = r.threshold
+	}
 	status := "DIFFERENT"
 	if r.Identical {
 		status = "IDENTICAL"
-	} else if r.IsSimilar(DefaultSimilarityThreshold) {
+	} else if r.IsSimilar(threshold) {
 		status = "SIMILAR"
 	}
 
 	summary := fmt.Sprintf(`PDF Comparison Result
 =====================
-File 1: %s (%d pages, %s)
-File 2: %s (%d pages, %s)
+File 1: %s (%s)
+File 2: %s (%s)
 
 Status: %s
 Overall Similarity: %.1f%%
@@ -259,8 +268,8 @@ Overall Similarity: %.1f%%
 Byte Comparison: %s
 Visual Comparison: %.1f%% similar (%d pages compared)
 `,
-		r.Metadata.File1, r.Metadata.Pages1, formatBytes(r.Metadata.Size1),
-		r.Metadata.File2, r.Metadata.Pages2, formatBytes(r.Metadata.Size2),
+		r.Metadata.File1, r.fileStats(r.Metadata.Pages1, r.Metadata.Size1),
+		r.Metadata.File2, r.fileStats(r.Metadata.Pages2, r.Metadata.Size2),
 		status,
 		r.SimilarityScore*100,
 		byteStatus(r.ByteComparison.Identical),
@@ -270,9 +279,18 @@ Visual Comparison: %.1f%% similar (%d pages compared)
 
 	summary += r.pageLines()
 
-	summary += fmt.Sprintf("\nTime elapsed: %v", r.Duration.Round(time.Millisecond))
+	summary += fmt.Sprintf("\nTime elapsed: %v\n", r.Duration.Round(time.Millisecond))
 
 	return summary
+}
+
+// fileStats describes a file by its page count and size. The page count is
+// left out when the comparison decided before opening the documents.
+func (r *Result) fileStats(pages int, size int64) string {
+	if r.Metadata.Pages1 == 0 && r.Metadata.Pages2 == 0 && r.VisualComparison.SamplingStrategy != "empty documents" {
+		return formatBytes(size)
+	}
+	return fmt.Sprintf("%d pages, %s", pages, formatBytes(size))
 }
 
 // pageLines lists the modified, deleted and inserted pages, one line each,

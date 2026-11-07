@@ -132,7 +132,7 @@ func readProfile(path, module string) (map[string][]block, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 
 	type key struct {
 		file string

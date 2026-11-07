@@ -31,6 +31,7 @@ func withFlags(t *testing.T, set func()) {
 	mode, dpi, workers, threshold = "auto", 72, runtime.NumCPU(), 0.95
 	hashType, textHash, sampling, maxMemory = "both", "minhash", "auto", 512
 	textTolerant, noTiles = false, false
+	timeout = 0
 	if set != nil {
 		set()
 	}
@@ -224,7 +225,7 @@ func TestQuickCompare(t *testing.T) {
 
 	withFlags(t, nil)
 	var buf bytes.Buffer
-	if err := quickCompare(&buf, a, a); err != nil {
+	if _, err := quickCompare(&buf, a, a); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(buf.String(), "IDENTICAL") {
@@ -232,7 +233,7 @@ func TestQuickCompare(t *testing.T) {
 	}
 
 	buf.Reset()
-	if err := quickCompare(&buf, a, diff); err != nil {
+	if _, err := quickCompare(&buf, a, diff); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(buf.String(), "DIFFERENT") {
@@ -241,7 +242,7 @@ func TestQuickCompare(t *testing.T) {
 
 	withFlags(t, func() { format = "json" })
 	buf.Reset()
-	if err := quickCompare(&buf, a, diff); err != nil {
+	if _, err := quickCompare(&buf, a, diff); err != nil {
 		t.Fatal(err)
 	}
 	var decoded struct{ Identical bool }
@@ -249,7 +250,7 @@ func TestQuickCompare(t *testing.T) {
 		t.Errorf("JSON: %v, %+v", err, decoded)
 	}
 
-	if err := quickCompare(&buf, a, filepath.Join(dir, "missing.pdf")); err == nil {
+	if _, err := quickCompare(&buf, a, filepath.Join(dir, "missing.pdf")); err == nil {
 		t.Error("missing file: want an error")
 	}
 }

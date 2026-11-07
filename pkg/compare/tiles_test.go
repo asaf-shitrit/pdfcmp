@@ -48,8 +48,8 @@ func TestApplyTiles(t *testing.T) {
 	edit1, edit2 := halves(true)
 	r := PageResult{Similarity: 0.99}
 	applyTiles(&r, same1, same2, false)
-	if r.Similarity != 0.99 || r.TileSimilarity == nil || *r.TileSimilarity != 1 || r.WorstTile == nil || r.TileChanged {
-		t.Errorf("same pages: %+v, want a tile score of 1 and no change", r)
+	if r.Similarity != 1 || r.TileSimilarity == nil || *r.TileSimilarity != 1 || r.WorstTile == nil || r.TileChanged {
+		t.Errorf("same pages: %+v, want a tile score of 1, no change and the hash score raised to it", r)
 	}
 
 	r = PageResult{Similarity: 0.99}

@@ -252,7 +252,7 @@ func Generate(dir string, w io.Writer) error {
 		if _, err := s.Write(dir); err != nil {
 			return err
 		}
-		fmt.Fprintf(w, "%-22s %3d pages  %s\n", s.Name, s.Pages, s.Description)
+		_, _ = fmt.Fprintf(w, "%-22s %3d pages  %s\n", s.Name, s.Pages, s.Description)
 	}
 	return nil
 }

@@ -239,9 +239,4 @@ func TestEstimateShift(t *testing.T) {
 	}
 }
 
-func jpegBytesRoundTrip(t testing.TB, img image.Image) image.Image {
-	t.Helper()
-	return jpegRoundTrip(t, img, 90)
-}
-
 var _ = jpeg.DefaultQuality

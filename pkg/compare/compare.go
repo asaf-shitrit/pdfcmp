@@ -56,7 +56,7 @@ func (c *comparer) getRenderer() (render.Renderer, error) {
 		if c.renderer != nil {
 			return
 		}
-		r, err := render.NewPdfiumRenderer()
+		r, err := render.NewPdfiumRendererWithPool(c.opts.Workers)
 		if err != nil {
 			c.rendererErr = fmt.Errorf("failed to create renderer: %w", err)
 			return
@@ -93,6 +93,8 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 		ComparisonLayers: []string{},
 		textMode:         c.opts.TextChange,
 		tiles:            c.opts.Tiles,
+		threshold:        c.opts.SimilarityThreshold,
+		hasThreshold:     true,
 	}
 	if err := c.runStages(ctx, result, pdf1, pdf2); err != nil {
 		return nil, err
@@ -113,13 +115,19 @@ func (c *comparer) Compare(ctx context.Context, pdf1, pdf2 string) (*Result, err
 // runStages fills in result one stage at a time, cheapest first, and stops at
 // the first stage that decides the comparison.
 func (c *comparer) runStages(ctx context.Context, result *Result, pdf1, pdf2 string) error {
+	if err := result.statFiles(pdf1, pdf2); err != nil {
+		return err
+	}
 	if sameFile(pdf1, pdf2) {
 		c.opts.Logger.Debug("Self-comparison detected, returning identical")
 		result.setIdentical("skipped (same file)")
+		result.ByteComparison = ByteResult{
+			Identical:  true,
+			Size1:      result.Metadata.Size1,
+			Size2:      result.Metadata.Size2,
+			SizesMatch: true,
+		}
 		return nil
-	}
-	if err := result.statFiles(pdf1, pdf2); err != nil {
-		return err
 	}
 	if c.usesBytes() {
 		done, err := c.byteStage(result, pdf1, pdf2)
@@ -193,15 +201,20 @@ func (c *comparer) visualStages(ctx context.Context, result *Result, pdf1, pdf2 
 	if err != nil {
 		return err
 	}
-	doc1, err := renderer.Open(pdf1)
+	release, err := acquireDocumentPair(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to open %s: %w", pdf1, err)
+		return err
+	}
+	defer release()
+	doc1, err := openDocument(ctx, renderer, pdf1)
+	if err != nil {
+		return err
 	}
 	defer func() { _ = doc1.Close() }()
 
-	doc2, err := renderer.Open(pdf2)
+	doc2, err := openDocument(ctx, renderer, pdf2)
 	if err != nil {
-		return fmt.Errorf("failed to open %s: %w", pdf2, err)
+		return err
 	}
 	defer func() { _ = doc2.Close() }()
 
@@ -218,6 +231,45 @@ func (c *comparer) visualStages(ctx context.Context, result *Result, pdf1, pdf2 
 		}
 	}
 	return c.sampleStage(ctx, result, doc1, doc2)
+}
+
+// openDocument opens path, waiting for the renderer's resources until ctx
+// is done when the renderer can.
+func openDocument(ctx context.Context, r render.Renderer, path string) (render.Document, error) {
+	if o, ok := r.(render.ContextOpener); ok {
+		return o.OpenContext(ctx, path, "")
+	}
+	return r.Open(path)
+}
+
+// documentPairs holds a slot for each comparison that has its two documents
+// open. An open document holds one of the shared pool's PDFium instances, so
+// comparisons that opened their first document and wait for an instance for
+// their second could otherwise hold every instance between them and wait
+// for good.
+var (
+	documentPairsOnce sync.Once
+	documentPairs     chan struct{}
+)
+
+// acquireDocumentPair waits until a comparison may open its two documents,
+// or until ctx is done, and returns the function that gives the slot back.
+// Without a started pool (a renderer of another kind) there is nothing to
+// share, and it returns at once.
+func acquireDocumentPair(ctx context.Context) (func(), error) {
+	size := render.PoolSize()
+	if size == 0 {
+		return func() {}, nil
+	}
+	documentPairsOnce.Do(func() {
+		documentPairs = make(chan struct{}, max(size/2, 1))
+	})
+	select {
+	case documentPairs <- struct{}{}:
+		return func() { <-documentPairs }, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
 // pageCountStage records both page counts. It decides the comparison when
@@ -304,8 +356,8 @@ func (c *comparer) sampleStage(ctx context.Context, result *Result, doc1, doc2 r
 func (c *comparer) needsFullScan(sample []PageResult, pageCount int) bool {
 	return c.opts.Sampling == SamplingAuto && len(sample) < pageCount &&
 		worstSimilarity(sample) >= c.opts.SimilarityThreshold &&
-		!(c.opts.TextChange == TextChangeFails && anyTextChanged(sample)) &&
-		!(c.opts.Tiles && anyTileChanged(sample))
+		(c.opts.TextChange != TextChangeFails || !anyTextChanged(sample)) &&
+		(!c.opts.Tiles || !anyTileChanged(sample))
 }
 
 // anyTileChanged reports whether the worst tile of any page changed.
@@ -439,20 +491,25 @@ func textDecides(info1, info2 render.PageInfo) bool {
 // renderPairs renders nums1 in the first document and nums2 in the second,
 // page j of one against page j of the other, and calls score with each
 // pair's two renders as soon as both are ready, from up to the
-// memory-adjusted worker count of goroutines at once. j is the pair's index. A page that fails to render in either document is not scored;
-// the errors are returned together once every page is done. When one
-// document's stream fails outright, the other stops rendering too.
+// memory-adjusted worker count of goroutines at once. j is the pair's index.
+// A page that fails to render in either document is not scored; the errors
+// are returned together once every page is done. When one document's stream
+// fails outright, the other stops rendering too.
 //
-// Memory is not bounded: a render waits in the pairer until the other
-// document's render of the same page arrives, so a document that renders
-// much faster can hold most of its pages there.
+// A render waits in the pairer until the other document's render of the
+// same page arrives. The pairer holds at most workers+1 of them per
+// document, so a document that renders faster than the other waits for it
+// rather than holding all its pages in memory.
 func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, nums1, nums2 []int, opts render.Options, score func(j int, img1, img2 image.Image)) error {
 	workers := c.adjustWorkersForMemory(doc1)
 	// Twice the workers lets rendering run ahead of scoring.
-	bufferSize := min(workers*2, len(nums1))
+	opts.Workers = workers
+	bufferSize := min(workers, len(nums1))
 	renderCtx, stopRendering := context.WithCancel(ctx)
 	defer stopRendering()
-	pairer := &pagePairer{renders: map[int]*[2]image.Image{}, jobs: make(chan int, bufferSize)}
+	pairer := newPagePairer(bufferSize, workers+1)
+	stopAborting := context.AfterFunc(renderCtx, pairer.abort)
+	defer stopAborting()
 
 	// Page errors are collected while the pipeline runs, so a page that fails
 	// to render can never block a receiver.
@@ -470,7 +527,9 @@ func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, 
 	var receivers sync.WaitGroup
 	for d, doc := range []render.Document{doc1, doc2} {
 		pageNums := [][]int{nums1, nums2}[d]
-		out := make(chan render.RenderedPage, bufferSize)
+		// Unbuffered, so a render the pairer has no space for stays with
+		// its worker, which then takes no new page.
+		out := make(chan render.RenderedPage)
 		go func() {
 			if err := doc.RenderPagesStream(renderCtx, pageNums, opts, out); err != nil {
 				streamErrCh <- fmt.Errorf("doc%d render failed: %w", d+1, err)
@@ -481,6 +540,7 @@ func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, 
 		receivers.Add(1)
 		go func() {
 			defer receivers.Done()
+			defer pairer.finish(d)
 			pairer.receive(d, out, pageNums, pageErrCh)
 		}()
 	}
@@ -528,9 +588,37 @@ func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, 
 // scoring once both have arrived. Pages are keyed by their index in the
 // rendered page list.
 type pagePairer struct {
-	mu      sync.Mutex
-	renders map[int]*[2]image.Image
-	jobs    chan int
+	mu       sync.Mutex
+	space    *sync.Cond // signalled when a document's unpaired count falls or the other finishes
+	renders  map[int]*[2]image.Image
+	unpaired [2]int          // renders of each document waiting for the other's
+	finished [2]bool         // the document's stream has closed
+	failed   [2]map[int]bool // pages the document failed to render
+	aborted  bool            // rendering stopped; nothing waits for space
+	jobs     chan int
+
+	// maxUnpaired is how many renders of one document wait for the other's
+	// at most. Render workers take pages in order, so the renders a
+	// document that is ahead lacks are its in-flight pages, at most one per
+	// worker. Holding more than the worker count therefore never blocks the
+	// document that is behind, and the pairer cannot deadlock. A render
+	// whose partner failed is dropped rather than held, so failed pages
+	// take no space.
+	maxUnpaired int
+}
+
+// newPagePairer returns a pairer that queues up to bufferSize pages for
+// scoring and holds up to maxUnpaired renders of each document; maxUnpaired
+// must exceed the render workers per document.
+func newPagePairer(bufferSize, maxUnpaired int) *pagePairer {
+	p := &pagePairer{
+		renders:     map[int]*[2]image.Image{},
+		failed:      [2]map[int]bool{{}, {}},
+		jobs:        make(chan int, bufferSize),
+		maxUnpaired: maxUnpaired,
+	}
+	p.space = sync.NewCond(&p.mu)
+	return p
 }
 
 // receive feeds document d's renders into the pairer until its stream
@@ -538,6 +626,7 @@ type pagePairer struct {
 func (p *pagePairer) receive(d int, out <-chan render.RenderedPage, pageNums []int, errs chan<- error) {
 	for res := range out {
 		if res.Err != nil {
+			p.fail(res.Index, d)
 			errs <- fmt.Errorf("doc%d page %d: %w", d+1, pageNums[res.Index], res.Err)
 			continue
 		}
@@ -545,12 +634,55 @@ func (p *pagePairer) receive(d int, out <-chan render.RenderedPage, pageNums []i
 	}
 }
 
-// add records document d's render of page j and queues the page when the
-// other render is already there. It sends outside the lock: a scorer needs
-// mu to take a job, so blocking on a full jobs channel while holding it
-// would deadlock.
-func (p *pagePairer) add(j, d int, img image.Image) {
+// finish records that document d's stream has closed. A render of the
+// other document still waiting for d's can wait no longer, so the other
+// document stops waiting for space.
+func (p *pagePairer) finish(d int) {
 	p.mu.Lock()
+	p.finished[d] = true
+	p.mu.Unlock()
+	p.space.Broadcast()
+}
+
+// fail records that document d could not render page j. The other
+// document's render of j, held or still to come, will never pair, so it is
+// dropped and gives its space back.
+func (p *pagePairer) fail(j, d int) {
+	other := 1 - d
+	p.mu.Lock()
+	p.failed[d][j] = true
+	if pair, ok := p.renders[j]; ok && pair[other] != nil {
+		delete(p.renders, j)
+		p.unpaired[other]--
+	}
+	p.mu.Unlock()
+	p.space.Broadcast()
+}
+
+// abort stops every render waiting for space: rendering was cancelled, so
+// the renders it waits for may never come.
+func (p *pagePairer) abort() {
+	p.mu.Lock()
+	p.aborted = true
+	p.mu.Unlock()
+	p.space.Broadcast()
+}
+
+// add records document d's render of page j and queues the page when the
+// other render is already there. A render that has to wait for the other
+// document's first waits for space, unless that document has finished. It
+// sends outside the lock: a scorer needs mu to take a job, so blocking on a
+// full jobs channel while holding it would deadlock.
+func (p *pagePairer) add(j, d int, img image.Image) {
+	other := 1 - d
+	p.mu.Lock()
+	for p.waits(j, other) && p.unpaired[d] >= p.maxUnpaired && !p.finished[other] && !p.aborted && !p.failed[other][j] {
+		p.space.Wait()
+	}
+	if p.failed[other][j] {
+		p.mu.Unlock()
+		return
+	}
 	pair, ok := p.renders[j]
 	if !ok {
 		pair = new([2]image.Image)
@@ -558,11 +690,24 @@ func (p *pagePairer) add(j, d int, img image.Image) {
 	}
 	pair[d] = img
 	ready := pair[0] != nil && pair[1] != nil
+	if ready {
+		p.unpaired[other]--
+	} else {
+		p.unpaired[d]++
+	}
 	p.mu.Unlock()
 
 	if ready {
+		p.space.Broadcast()
 		p.jobs <- j
 	}
+}
+
+// waits reports whether page j still lacks document other's render. The
+// caller holds mu.
+func (p *pagePairer) waits(j, other int) bool {
+	pair, ok := p.renders[j]
+	return !ok || pair[other] == nil
 }
 
 // take removes and returns page j's two renders.
@@ -605,6 +750,12 @@ func (e *renderErrors) Unwrap() []error { return e.errs }
 // scorePage scores one page (0-indexed pageNum) from its two renders: a
 // visual score, then the page's text folded in (see textAdjust).
 func (c *comparer) scorePage(pageNum int, img1, img2 image.Image, info pageInfoPair, textSim *float64) PageResult {
+	if textChanged(info) && invisibleChange(img1, img2) {
+		// The text differs only as extracted: hidden text, or text turned
+		// into outlines, that changed no pixel of the page.
+		info.info2.TextHash, info.info2.TextBag = info.info1.TextHash, info.info1.TextBag
+		textSim = nil
+	}
 	r := c.visualScore(img1, img2)
 	r.Page = pageNum + 1
 	r.Similarity = textAdjust(r.Similarity, info, textSim)
@@ -642,6 +793,16 @@ func (c *comparer) visualScore(img1, img2 image.Image) PageResult {
 	return r
 }
 
+// invisibleChange reports whether two renders of a page are the same
+// picture: no pixel differs by visual.InkContrast or more on any channel
+// (see visual.ChangedPixels). Whatever changed in the page's text, a reader
+// cannot see it. It does not forgive a moved edge as InkDiff does: a digit
+// changed in small type moves only edges.
+func invisibleChange(img1, img2 image.Image) bool {
+	n, ok := visual.ChangedPixels(img1, img2)
+	return ok && n == 0
+}
+
 // useTiles reports whether a page is checked by its tiles. A page whose
 // text changed is not: the text rule already judges it, and a tile cannot
 // tell a reworded line from a stamp, so tiles would override a caller who
@@ -657,8 +818,8 @@ func isScan(info pageInfoPair) bool {
 	return info.ok && info.info1.TextChars == 0 && info.info2.TextChars == 0
 }
 
-// scanHashFloor is the lowest hash similarity at which a scan page that
-// its aligned tiles find unchanged still passes. A rescan moves a few bits of
+// scanHashFloor is the lowest hash similarity at which a page that its
+// tiles find unchanged still passes. A rescan moves a few bits of
 // the whole-page hashes, which reduce the page to 9x8 or 32x32 samples; a
 // different page moves many more.
 const scanHashFloor = 0.85
@@ -668,11 +829,29 @@ const scanHashFloor = 0.85
 // alone: the score says how much of the page changed, and a stamp is a small
 // part of it, though the hashes cannot see it.
 //
+// A born-digital page changed where ink appeared or disappeared (see
+// visual.InkDiff), or where a tile's mean moved by more than
+// visual.PhotoTolerance, as an edit inside a photo does. A page printed to
+// an image and rendered again, or drawn by another writer, moves a few bits
+// of the whole-page hashes; when its tiles find no change, a hash score
+// down to scanHashFloor is that noise and the page scores as its tiles do.
 // A scan page is cut after undoing the shift, lean and exposure of a rescan
-// (see visual.AlignedTileDiff). When its tiles then agree, the hashes' drop
-// below the threshold, down to scanHashFloor, is that same rescan noise and
-// the page scores as its tiles do.
+// (see visual.AlignedTileDiff), with the same floor for its hashes.
 func applyTiles(r *PageResult, img1, img2 image.Image, scan bool) {
+	if !scan {
+		if n, tile, ok := visual.InkDiff(img1, img2); ok {
+			sim := visual.InkScore(n)
+			r.TileChanged = n > visual.InkTolerance
+			if d, t := visual.TileDiff(img1, img2); d > visual.PhotoTolerance {
+				sim, tile, r.TileChanged = math.Min(sim, visual.TileScore(d)), t, true
+			}
+			r.TileSimilarity, r.WorstTile = &sim, tile
+			if !r.TileChanged && r.Similarity >= scanHashFloor {
+				r.Similarity = math.Max(r.Similarity, sim)
+			}
+			return
+		}
+	}
 	tileDiff := visual.TileDiff
 	if scan {
 		tileDiff = visual.AlignedTileDiff
@@ -714,7 +893,7 @@ func textAdjust(similarity float64, info pageInfoPair, textSim *float64) float64
 	if !info.ok || info.info1.TextHash == 0 || info.info2.TextHash == 0 {
 		return similarity
 	}
-	if info.info1.TextHash == info.info2.TextHash {
+	if sameText(info.info1, info.info2) {
 		if similarity > 0.9 {
 			return math.Max(similarity, 0.99)
 		}
@@ -727,11 +906,21 @@ func textAdjust(similarity float64, info pageInfoPair, textSim *float64) float64
 	return similarity
 }
 
-// textChanged reports whether a page's text differs between the documents.
-// A page with text against one without counts; two pages without text, such
-// as scans, do not.
+// textChanged reports whether a page's text differs between the documents:
+// both pages have text and different characters (see sameText). A page
+// without text, such as a scan or a page printed to an image, has nothing to
+// compare, so its render decides.
 func textChanged(info pageInfoPair) bool {
-	return info.ok && info.info1.TextHash != info.info2.TextHash
+	return info.ok && info.info1.TextHash != 0 && info.info2.TextHash != 0 &&
+		!sameText(info.info1, info.info2)
+}
+
+// sameText reports whether two pages carry the same text: it extracts the
+// same, or the same characters in another order (see content.Bag). Writing a
+// PDF again can reorder its text runs and the spaces an extractor reads
+// between words; text that moved on the page is the render's to judge.
+func sameText(info1, info2 render.PageInfo) bool {
+	return info1.TextHash == info2.TextHash || (info1.TextBag != 0 && info1.TextBag == info2.TextBag)
 }
 
 // setIdentical records documents found identical without comparing pages.
@@ -801,9 +990,11 @@ func (c *comparer) Close() error {
 	return nil
 }
 
-// adjustWorkersForMemory reduces worker count if memory limit would be exceeded.
-// Each worker renders pages from both documents concurrently, so we need memory
-// for 2 pages per worker at the given DPI.
+// adjustWorkersForMemory reduces the worker count so that the renders held
+// at once fit in MaxMemoryMB. Per worker, renderPairs holds at most a page of
+// each document being rendered, one waiting in the pairer, one queued for
+// scoring and one being scored: 8 renders at the given DPI, sized like the
+// first page. It is an estimate: the PDF engine's own memory is on top.
 func (c *comparer) adjustWorkersForMemory(doc render.Document) int {
 	workers := c.opts.Workers
 	maxMemBytes := int64(c.opts.MaxMemoryMB) * 1024 * 1024
@@ -818,8 +1009,7 @@ func (c *comparer) adjustWorkersForMemory(doc render.Document) int {
 	// Estimate memory per page (4 bytes per pixel for RGBA)
 	memPerPage := render.EstimateMemoryUsage(pageInfo.WidthPts, pageInfo.HeightPts, c.opts.DPI)
 
-	// Each worker needs memory for 2 pages (one from each document)
-	memPerWorker := memPerPage * 2
+	memPerWorker := memPerPage * 8
 
 	// Calculate max workers based on memory
 	if memPerWorker > 0 {
@@ -882,7 +1072,7 @@ type pageInfoPair struct {
 // little to estimate (see content.MinShingles), or when the text is
 // identical, so that the exact-hash path decides.
 func (c *comparer) textSimilarity(info1, info2 render.PageInfo) *float64 {
-	if c.opts.TextHash == TextHashOff || info1.TextHash == 0 || info2.TextHash == 0 || info1.TextHash == info2.TextHash {
+	if c.opts.TextHash == TextHashOff || info1.TextHash == 0 || info2.TextHash == 0 || sameText(info1, info2) {
 		return nil
 	}
 	s, ok := content.Similarity(info1.Text, info2.Text)

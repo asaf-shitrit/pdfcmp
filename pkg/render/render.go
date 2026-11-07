@@ -15,6 +15,10 @@ const (
 // Options configures PDF rendering behavior
 type Options struct {
 	DPI int // Dots per inch for rendering
+
+	// Workers caps how many pages RenderPagesStream renders at once; 0 uses
+	// the renderer's worker count.
+	Workers int
 }
 
 // DefaultOptions returns sensible default rendering options
@@ -34,6 +38,7 @@ type PageInfo struct {
 	TextChars   int     // Number of text characters on page
 	ObjectCount int     // Number of graphical objects on page
 	TextHash    uint64  // Hash of text content (if available)
+	TextBag     uint64  // Hash of the text's characters in sorted order (see content.Bag)
 	Text        string  // Extracted text content (empty if none)
 }
 
@@ -68,6 +73,12 @@ type Document interface {
 
 	// Close releases resources associated with the document
 	Close() error
+}
+
+// ContextOpener is a Renderer that can wait for the resources to open a
+// document until a context is done.
+type ContextOpener interface {
+	OpenContext(ctx context.Context, path, password string) (Document, error)
 }
 
 // Renderer is the interface for PDF rendering backends

@@ -1,7 +1,9 @@
 package content
 
 import (
+	"slices"
 	"strings"
+	"unicode"
 
 	"golang.org/x/text/unicode/norm"
 )
@@ -30,4 +32,33 @@ func dropInvisible(r rune) rune {
 		return -1
 	}
 	return r
+}
+
+// Bag returns the letters and digits of text in sorted order: what is
+// written on a page whatever order it was written in, and whatever symbols
+// the PDF maps its glyphs to. Writing a PDF again can reorder its text runs,
+// move the gaps an extractor reads as spaces, and map a glyph to another
+// code point: Ghostscript turns bullets into "ï" or "¥" and broken encodings
+// into control characters. Those land in punctuation, symbols, control
+// characters and the Latin-1 and Latin Extended blocks, which Bag leaves out;
+// a letter or digit of any other script added, removed or replaced changes
+// it. A change confined to what it leaves out is the render's to judge.
+func Bag(text string) string {
+	var runes []rune
+	for _, r := range text {
+		if counted(r) {
+			runes = append(runes, r)
+		}
+	}
+	slices.Sort(runes)
+	return string(runes)
+}
+
+// counted reports whether Bag keeps r: an ASCII letter or digit, or a
+// letter or digit outside U+0080-U+02FF.
+func counted(r rune) bool {
+	if r < 0x80 {
+		return r >= '0' && r <= '9' || r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z'
+	}
+	return r > 0x2FF && (unicode.IsLetter(r) || unicode.IsDigit(r))
 }

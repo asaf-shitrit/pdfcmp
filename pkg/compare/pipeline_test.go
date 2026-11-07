@@ -31,6 +31,7 @@ type fakeDoc struct {
 	textHash   uint64 // reported by PageInfo; 0 means no text
 	content    uint64 // reported by ContentHash
 	contentErr error
+	draw       func(pageNum int, img *image.Gray) // draws on each render, when set
 }
 
 // errBrokenPage is what a fakeDoc page in fail renders with.
@@ -58,6 +59,9 @@ func (d *fakeDoc) RenderPage(ctx context.Context, pageNum int, opts render.Optio
 		img.Pix[i] = 128
 	}
 	img.Set(pageNum%32, 0, color.White) // pages differ from each other, not across documents
+	if d.draw != nil {
+		d.draw(pageNum, img)
+	}
 	return img, nil
 }
 
@@ -279,5 +283,86 @@ func TestRedrawnGraphicsAreNotSimilar(t *testing.T) {
 	}
 	if res.IsSimilar(DefaultSimilarityThreshold) {
 		t.Errorf("redrawn graphics passed: similarity %.4f", res.SimilarityScore)
+	}
+}
+
+func TestPagePairerBoundsUnpairedRenders(t *testing.T) {
+	p := newPagePairer(16, 3)
+	img := image.NewGray(image.Rect(0, 0, 1, 1))
+	var added atomic.Int32
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for j := range 10 {
+			p.add(j, 0, img)
+			added.Add(1)
+		}
+	}()
+
+	waitFor := func(want int32) {
+		t.Helper()
+		deadline := time.Now().Add(2 * time.Second)
+		for added.Load() != want && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		time.Sleep(20 * time.Millisecond) // let a pairer that does not block run on
+		if got := added.Load(); got != want {
+			t.Fatalf("pairer took %d renders of the document ahead, want %d", got, want)
+		}
+	}
+	waitFor(3)
+	p.add(0, 1, img) // pairs page 0 and frees a slot
+	waitFor(4)
+	p.finish(1) // the other document will send nothing more
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pairer kept waiting after the other document finished")
+	}
+}
+
+func TestComparePagesOneDocumentFarAhead(t *testing.T) {
+	const n = 60
+	results, err := runComparePages(t, context.Background(), &fakeDoc{pages: n}, &fakeDoc{pages: n, delay: time.Millisecond}, allPageNums(n))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != n {
+		t.Fatalf("got %d results, want %d", len(results), n)
+	}
+}
+
+// TestComparePagesPartialFailures fails more pages of one document than the
+// pairer holds renders of the other: the renders whose partner failed must
+// not use up its space.
+func TestComparePagesPartialFailures(t *testing.T) {
+	const n = 20
+	fail := map[int]bool{}
+	for p := range 8 {
+		fail[p] = true
+	}
+	_, err := runComparePages(t, context.Background(), &fakeDoc{pages: n}, &fakeDoc{pages: n, fail: fail}, allPageNums(n))
+	if !errors.Is(err, errBrokenPage) {
+		t.Fatalf("got %v, want the broken pages' errors", err)
+	}
+}
+
+// TestPagePairerAbortFreesWaiters checks that an aborted pairer stops a
+// render waiting for space, even though the other document never finishes.
+func TestPagePairerAbortFreesWaiters(t *testing.T) {
+	p := newPagePairer(16, 1)
+	img := image.NewGray(image.Rect(0, 0, 1, 1))
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		p.add(0, 0, img)
+		p.add(1, 0, img) // waits: no space, and doc 2 sends nothing
+	}()
+	time.Sleep(20 * time.Millisecond)
+	p.abort()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("pairer kept waiting after it was aborted")
 	}
 }

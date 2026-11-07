@@ -8,7 +8,9 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"runtime/debug"
 	"syscall"
+	"time"
 
 	"github.com/asaf-shitrit/pdfcmp/pkg/compare"
 	"github.com/spf13/cobra"
@@ -31,15 +33,70 @@ var (
 	noTiles      bool
 	sampling     string
 	maxMemory    int
+	timeout      time.Duration
 )
 
+// Exit codes, as cmp(1) and diff(1) use them.
+const (
+	exitSame      = 0 // the files are identical or similar
+	exitDifferent = 1 // the files differ
+	exitError     = 2 // the comparison could not be made
+)
+
+// version is set at build time with -ldflags "-X main.version=...".
+var version string
+
+// versionString returns the build's version: the one set at build time, else
+// the module version go install recorded, else "dev".
+func versionString() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
+
+// exitCode is what main exits with once the command has run.
+var exitCode = exitSame
+
 func main() {
+	os.Exit(run(os.Args[1:]))
+}
+
+// run executes the command line args and returns the process exit code.
+func run(args []string) int {
+	exitCode = exitSame
+	rootCmd := newRootCmd()
+	rootCmd.SetArgs(args)
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "Error:", err)
+		return exitError
+	}
+	return exitCode
+}
+
+func newRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:   "pdfcmp",
 		Short: "Lightning-fast PDF comparison engine with visual perception",
 		Long: `pdfcmp is a high-performance comparison tool and library that uses a
 multi-stage pipeline (byte-wise, text, and visual) to detect
-identical or similar PDF documents with extreme speed.`,
+identical or similar PDF documents with extreme speed.
+
+Exit status is 0 if the files are identical or similar, 1 if they
+differ, and 2 if they could not be compared.`,
+		Version:       versionString(),
+		SilenceErrors: true,
+		PersistentPreRunE: func(cmd *cobra.Command, args []string) error {
+			if format != "text" && format != "json" {
+				return fmt.Errorf("invalid format: %s (want text or json)", format)
+			}
+			// The arguments parsed; from here on an error is not a usage error.
+			cmd.SilenceUsage = true
+			return nil
+		},
 	}
 
 	// Global flags
@@ -70,7 +127,8 @@ identical or similar PDF documents with extreme speed.`,
 	compareCmd.Flags().BoolVar(&noTiles, "no-tiles", false, "Score pages by their perceptual hashes alone, without the worst-tile check for small local changes")
 	compareCmd.Flags().BoolVar(&textTolerant, "text-tolerant", false, "Let the threshold decide when a page's text changed, instead of calling the files different")
 	compareCmd.Flags().StringVar(&sampling, "sampling", "auto", "Sampling strategy: auto, all, strategic, thumbnail")
-	compareCmd.Flags().IntVar(&maxMemory, "memory", 512, "Max memory in MB")
+	compareCmd.Flags().IntVar(&maxMemory, "memory", 512, "Memory budget in MB for page renders; fewer pages render at once to stay within it")
+	compareCmd.Flags().DurationVar(&timeout, "timeout", 0, "Give up after this long, e.g. 30s or 5m (0 waits for the comparison to finish)")
 
 	// Quick command
 	quickCmd := &cobra.Command{
@@ -85,16 +143,14 @@ identical or similar PDF documents with extreme speed.`,
 	versionCmd := &cobra.Command{
 		Use:   "version",
 		Short: "Print version information",
+		Args:  cobra.NoArgs,
 		Run: func(cmd *cobra.Command, args []string) {
-			fmt.Println("pdfcmp v0.1.0")
+			_, _ = fmt.Fprintln(cmd.OutOrStdout(), "pdfcmp", versionString())
 		},
 	}
 
 	rootCmd.AddCommand(compareCmd, quickCmd, versionCmd)
-
-	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
-	}
+	return rootCmd
 }
 
 // Flag values accepted by the compare command.
@@ -179,17 +235,27 @@ func showProgress() bool { return verbose && !quiet }
 func runCompare(cmd *cobra.Command, args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// After the first signal, restore the default handling, so a second
+	// one kills a comparison that is slow to stop.
+	context.AfterFunc(ctx, stop)
+	if timeout < 0 {
+		return fmt.Errorf("invalid timeout: %v", timeout)
+	}
+	if timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 
 	result, err := compareFiles(ctx, args[0], args[1])
 	if err != nil {
 		return err
 	}
-	if err := writeResult(os.Stdout, result); err != nil {
+	if err := writeResult(cmd.OutOrStdout(), result); err != nil {
 		return err
 	}
-	// Exit with code 1 if files are different
 	if !result.IsSimilar(threshold) {
-		os.Exit(1)
+		exitCode = exitDifferent
 	}
 	return nil
 }
@@ -207,7 +273,7 @@ func compareFiles(ctx context.Context, pdf1, pdf2 string) (*compare.Result, erro
 	if err != nil {
 		return nil, fmt.Errorf("failed to create comparer: %w", err)
 	}
-	defer cmp.Close()
+	defer func() { _ = cmp.Close() }()
 
 	if !quiet {
 		fmt.Fprintf(os.Stderr, "Comparing %s and %s...\n", pdf1, pdf2)
@@ -238,24 +304,32 @@ func writeResult(w io.Writer, result *compare.Result) error {
 }
 
 func runQuick(cmd *cobra.Command, args []string) error {
-	return quickCompare(os.Stdout, args[0], args[1])
+	identical, err := quickCompare(cmd.OutOrStdout(), args[0], args[1])
+	if err != nil {
+		return err
+	}
+	if !identical {
+		exitCode = exitDifferent
+	}
+	return nil
 }
 
-// quickCompare compares two files byte for byte and writes whether they are
-// identical, as JSON or as text depending on the --format flag.
-func quickCompare(w io.Writer, pdf1, pdf2 string) error {
+// quickCompare compares two files byte for byte, writes whether they are
+// identical, as JSON or as text depending on the --format flag, and returns
+// it.
+func quickCompare(w io.Writer, pdf1, pdf2 string) (bool, error) {
 	if err := validateFiles(pdf1, pdf2); err != nil {
-		return err
+		return false, err
 	}
 	identical, err := compare.Quick(pdf1, pdf2)
 	if err != nil {
-		return fmt.Errorf("comparison failed: %w", err)
+		return false, fmt.Errorf("comparison failed: %w", err)
 	}
 
 	if format == "json" {
 		enc := json.NewEncoder(w)
 		enc.SetIndent("", "  ")
-		return enc.Encode(map[string]any{
+		return identical, enc.Encode(map[string]any{
 			"identical": identical,
 			"file1":     pdf1,
 			"file2":     pdf2,
@@ -266,7 +340,7 @@ func quickCompare(w io.Writer, pdf1, pdf2 string) error {
 		verdict = "IDENTICAL: Files are byte-for-byte identical"
 	}
 	_, err = fmt.Fprintln(w, verdict)
-	return err
+	return identical, err
 }
 
 // validateFiles validates each path with validateFile.
