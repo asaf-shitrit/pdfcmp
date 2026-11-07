@@ -70,7 +70,7 @@ func (l *defaultLogger) log(level LogLevel, levelStr, msg string, fields ...Fiel
 		fieldStr += fmt.Sprintf(" %s=%v", f.Key, f.Value)
 	}
 
-	fmt.Fprintf(l.output, "%s [%s] %s%s\n", timestamp, levelStr, msg, fieldStr)
+	_, _ = fmt.Fprintf(l.output, "%s [%s] %s%s\n", timestamp, levelStr, msg, fieldStr)
 }
 
 func (l *defaultLogger) Debug(msg string, fields ...Field) {

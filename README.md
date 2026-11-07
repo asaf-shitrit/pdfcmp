@@ -9,7 +9,7 @@
 
 The tool follows a layered approach to avoid heavy rendering whenever possible. It includes new **Smart Heuristics** to speed up decision making:
 
-1.  **Metadata**: Checks page counts and basic file attributes.
+1.  **Metadata**: Checks page counts and basic file attributes. When the page counts differ, the pages are aligned by their text (pages without text by their object count and content hash): `deleted_pages` lists the first file's pages that have no counterpart, `inserted_pages` the second file's, and each aligned pair is compared as usual, with its number in the second file in `page2`. The documents are different either way.
 2.  **Byte-wise**: Runs an xxHash64 check to catch identical files instantly (~9 GB/s).
 3.  **Visual Thumbnails**:
     *   **Histogram Pre-check**: Calculates RGB histograms to reject major color differences instantly (2x faster than hashing).
@@ -18,7 +18,7 @@ The tool follows a layered approach to avoid heavy rendering whenever possible. 
 5.  **Text Similarity**: When the text differs, a MinHash signature of its word 3-shingles estimates how much of it the two pages share, and that caps the page's score. Perceptual hashes see where text sits, not what it says, so without this a page rewritten in the same layout still scores 81-89% visually similar. When both pages have fewer than 60 distinct shingles, about six lines, they keep their visual score: on short text a single changed word would move the estimate by more than 10%.
 6.  **Strategic Sampling**: For long documents, it analyzes a subset of pages ($\sqrt{n} + 2$) to estimate similarity.
 7.  **Full Analysis**: If needed, it performs a complete page-by-page comparison using perceptual hashing (dHash and pHash).
-8.  **Tiles**: Every rendered page is also cut into a 64x90 grid of tiles (about 1.5% of the page wide) and the tiles' mean grey levels are compared. A whole-page hash reduces the page to 9x8 or 32x32 samples, so a 120x60 px stamp on a scanned page left the score at 0.992; the stamp moves one tile by tens of grey levels. If the most changed tile moves by more than 6 grey levels, the page is different (`tile_changed` in the JSON), however high its score: like a text change, a tile change decides the verdict and leaves the score alone. A tile averages thousands of pixels, so a rescan at another JPEG quality moves none by more than about 2 levels. `tile_similarity` is `1 - d/120` for the worst tile's difference `d`, 0.95 at the tolerance, and `worst_tile` says where. A page whose text changed is left to the text rule. `--no-tiles` turns this off.
+8.  **Tiles**: Every rendered page is also cut into a 64x90 grid of tiles (about 1.5% of the page wide) and the tiles' mean grey levels are compared. A whole-page hash reduces the page to 9x8 or 32x32 samples, so a 120x60 px stamp on a scanned page left the score at 0.992; the stamp moves one tile by tens of grey levels. If the most changed tile moves by more than 6 grey levels, the page is different (`tile_changed` in the JSON), however high its score: like a text change, a tile change decides the verdict and leaves the score alone. A tile averages thousands of pixels, so a rescan at another JPEG quality moves none by more than about 2 levels. `tile_similarity` is `1 - d/120` for the worst tile's difference `d`, 0.95 at the tolerance, and `worst_tile` says where. A page whose text changed is left to the text rule. Scan pages (no text on either side) are compared after undoing the shift, lean and exposure of a rescan, so a second scan of the same paper passes while a 6 px dot or a 2 px line 30 px long still fails. `--no-tiles` turns this off.
 
 A document is only as similar as its least similar page: the similarity score is the lowest page score, so one changed page makes a 100-page document different. The JSON output keeps the mean as `visual_comparison.overall_score`.
 
@@ -45,7 +45,7 @@ The simplest way to compare two files:
 ```bash
 pdfcmp compare file1.pdf file2.pdf
 ```
-*Exit code is `0` if similar, `1` if different. Any change to a page's extracted text counts as different, even a single digit; the similarity score still shows how much changed.*
+*Exit code is `0` if similar, `1` if different and `2` if the files could not be compared (a missing file, a file that is not a PDF, a bad flag, a timeout), as with `cmp` and `diff`. Any change to a page's extracted text counts as different, even a single digit; the similarity score still shows how much changed.*
 
 **Common flags:**
 - `--threshold 0.98`: Adjust similarity sensitivity (default is 0.95).
@@ -54,9 +54,12 @@ pdfcmp compare file1.pdf file2.pdf
 - `--text-tolerant`: Let the threshold decide when a page's text changed, instead of calling the files different. In Go: `compare.WithTextChange(compare.TextChangeScored)`.
 - `--text-hash off`: Compare page text by exact hash only, as v0.1.0 did.
 - `--format json`: Get detailed results in JSON format.
+- `--timeout 2m`: Give up, with exit code `2`, if the comparison takes longer.
+- `--memory 512`: Memory budget in MB for page renders (default 512). Fewer pages render at once to stay within it; the PDF engine's own memory comes on top.
 - `-v`: Show progress and stage information.
+- `pdfcmp --version`: Print the version.
 
-To only check if files are bit-to-bit identical:
+To only check if files are bit-to-bit identical (exit code `0` if they are, `1` if not):
 ```bash
 pdfcmp quick file1.pdf file2.pdf
 ```
@@ -81,6 +84,8 @@ func main() {
     }
 }
 ```
+
+A `Comparer` is safe for concurrent use, and so are comparers used side by side: they share one pool of PDFium instances, sized to the CPU count (4 to 16), and comparisons wait for a free pair of instances instead of failing. Memory use depends on the worker count and DPI, not on page count.
 
 ## Performance
 
@@ -124,6 +129,35 @@ Benchmarks run on Apple M2 Pro with various PDF types (single-page, small 4-page
 
 ## Accuracy & Robustness
 
+### Real documents
+
+`bench/realworld` labels pairs built from real PDFs: IRS forms and arXiv
+papers with their real revisions, long manuals, and web PDFs and scans from the
+Hugging Face datasets `pixparse/pdfa-eng-wds` and `pixparse/idl-wds`. Each is
+re-saved, rasterised or re-scanned (same), or edited by a digit, a word, a pen
+tick, a stamp, a photo patch or a page (different). On 1,007 held-out pairs,
+from shards never used while tuning pdfcmp, with the binary frozen before the
+run:
+
+| Tool | Accuracy | Changes caught | Unchanged called different |
+| :--- | :---: | :---: | :---: |
+| **pdfcmp** | **93.0%** | 97.1% | **12.5%** |
+| red6 PDFCompare | 84.1% | 99.8% | 37.4% |
+| pdf-visual-diff | 83.8% | 96.9% | 34.1% |
+| diff-pdf | 82.1% | 100.0% | 42.4% |
+| diff-pdf-visually | 81.2% | 100.0% | 44.5% |
+| pdf-diff | 75.2% | 68.4% | 15.5% |
+| `pdftotext` + `diff` | 75.2% | 68.4% | 15.5% |
+| ImageMagick `compare` | 56.2% | 41.1% | 23.1% |
+
+Pixel tools catch nearly every edit by calling 34-45% of the unchanged
+documents different; text tools miss every change to a scan, a photo or a
+drawing. pdfcmp's weak spot is two scans of the same paper, more than half of
+which it calls different. The comparison covers free, open-source tools;
+commercial ones (Adobe Acrobat Compare, Draftable, i-net PDFC) were not
+run. See [bench/realworld/README.md](bench/realworld/README.md)
+for the data, results by kind of change, timings and how to run it.
+
 The tool combines **dHash** (structure), **pHash** (frequency), and **histogram** analysis to remain robust against various degradations:
 
 | Scenario | DHash | PHash | Combined | Histogram | Result |
@@ -154,7 +188,7 @@ Perceptual hashes are built to survive the edits above, which is also why they m
 | One line rewritten | | 11/15 | 15/15 | 13/15 |
 | One digit of a total | 2/15 | 3/15 | 3/15 | 3/15 |
 
-v0.1.0 averaged page scores, so one rewritten page of five or more passed. Scoring by the worst page fixes that on its own, but only by margin: a rewritten page still scores 0.81-0.89 on its perceptual hashes, so a threshold of 0.80 would pass it again. MinHash scores it below 0.01. A single changed number moves 3 of a page's ~230 shingles, an exact Jaccard similarity of 0.975, and both text hashes put it at 0.95 or above, so it passes the default threshold in every mode.
+v0.1.0 averaged page scores, so one rewritten page of five or more passed. Scoring by the worst page fixes that on its own, but only by margin: a rewritten page still scores 0.81-0.89 on its perceptual hashes, so a threshold of 0.80 would pass it again. MinHash scores it below 0.01. A single changed number moves 3 of a page's ~230 shingles, an exact Jaccard similarity of 0.975, and both text hashes put it at 0.95 or above, so it passes the default threshold in every mode. The verdict still catches it: by default a change to the characters of a page's extracted text makes the page different (`text_changed`), and `--text-tolerant` leaves it to the threshold. The text is normalised first (NFKC, soft hyphens and zero-width characters dropped, whitespace runs collapsed), and the same characters in another order are the same text, so a re-export that reorders text runs or moves spaces is not a change; text that moved on the page is the render's to judge. A page without text, such as a scan, against the same page with text is judged by its render, as is a text change that changes no pixel, such as hidden text.
 
 pdfcmp uses MinHash, not SimHash, because SimHash counts repeated wording where MinHash sees a set. On a templated page, where every line repeats a label and only the values differ, a shingle repeated ten times outvotes the ten changed values. Five such pages with all ten values changed have an exact Jaccard similarity of 0.36-0.38; MinHash reads 0.31-0.41 and SimHash 0.96-0.99. SimHash's 8-byte fingerprint would only pay for itself if pdfcmp stored signatures, which it does not. `bench/simhash_test.go` keeps it for the comparison above.
 

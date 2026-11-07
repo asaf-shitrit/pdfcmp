@@ -3,8 +3,11 @@ package render
 import (
 	"context"
 	"fmt"
+	"image"
 	"path/filepath"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/asaf-shitrit/pdfcmp/internal/fixtures"
 )
@@ -213,4 +216,81 @@ func TestContentHash(t *testing.T) {
 			t.Error("want error")
 		}
 	})
+}
+
+// TestRenderPagesStreamWithPoolTaken renders while every other instance of
+// the pool is held by open documents: the stream renders on the document's
+// own instance instead of waiting for one.
+func TestRenderPagesStreamWithPoolTaken(t *testing.T) {
+	spec, _ := fixtures.Find("small_a.pdf")
+	path, err := spec.Write(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := NewPdfiumRendererWithPool(4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := renderer.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = doc.Close() }()
+	for range PoolSize() - 1 {
+		held, err := renderer.Open(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = held.Close() }()
+	}
+
+	pages := make([]int, doc.PageCount())
+	for i := range pages {
+		pages[i] = i
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	imgs, err := doc.RenderPages(ctx, pages, Options{DPI: DPIThumbnail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, img := range imgs {
+		if img == nil {
+			t.Errorf("page %d: no image", i)
+		}
+	}
+}
+
+// TestRenderedImagesOutliveLaterRenders checks that a render is the caller's
+// own copy: rendering more pages on the same instance leaves it unchanged.
+func TestRenderedImagesOutliveLaterRenders(t *testing.T) {
+	spec, _ := fixtures.Find("small_diff_a.pdf")
+	path, err := spec.Write(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	renderer, err := NewPdfiumRenderer()
+	if err != nil {
+		t.Fatal(err)
+	}
+	doc, err := renderer.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = doc.Close() }()
+
+	ctx := context.Background()
+	first, err := doc.RenderPage(ctx, 0, Options{DPI: DPIThumbnail})
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot := slices.Clone(first.(*image.RGBA).Pix)
+	for p := range doc.PageCount() {
+		if _, err := doc.RenderPage(ctx, p, Options{DPI: DPIThumbnail}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !slices.Equal(snapshot, first.(*image.RGBA).Pix) {
+		t.Error("an earlier render changed when later pages were rendered")
+	}
 }

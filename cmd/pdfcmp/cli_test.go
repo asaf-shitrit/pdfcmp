@@ -31,6 +31,7 @@ func withFlags(t *testing.T, set func()) {
 	mode, dpi, workers, threshold = "auto", 72, runtime.NumCPU(), 0.95
 	hashType, textHash, sampling, maxMemory = "both", "minhash", "auto", 512
 	textTolerant, noTiles = false, false
+	timeout = 0
 	if set != nil {
 		set()
 	}
@@ -224,7 +225,7 @@ func TestQuickCompare(t *testing.T) {
 
 	withFlags(t, nil)
 	var buf bytes.Buffer
-	if err := quickCompare(&buf, a, a); err != nil {
+	if _, err := quickCompare(&buf, a, a); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(buf.String(), "IDENTICAL") {
@@ -232,7 +233,7 @@ func TestQuickCompare(t *testing.T) {
 	}
 
 	buf.Reset()
-	if err := quickCompare(&buf, a, diff); err != nil {
+	if _, err := quickCompare(&buf, a, diff); err != nil {
 		t.Fatal(err)
 	}
 	if !strings.HasPrefix(buf.String(), "DIFFERENT") {
@@ -241,7 +242,7 @@ func TestQuickCompare(t *testing.T) {
 
 	withFlags(t, func() { format = "json" })
 	buf.Reset()
-	if err := quickCompare(&buf, a, diff); err != nil {
+	if _, err := quickCompare(&buf, a, diff); err != nil {
 		t.Fatal(err)
 	}
 	var decoded struct{ Identical bool }
@@ -249,7 +250,57 @@ func TestQuickCompare(t *testing.T) {
 		t.Errorf("JSON: %v, %+v", err, decoded)
 	}
 
-	if err := quickCompare(&buf, a, filepath.Join(dir, "missing.pdf")); err == nil {
+	if _, err := quickCompare(&buf, a, filepath.Join(dir, "missing.pdf")); err == nil {
 		t.Error("missing file: want an error")
+	}
+}
+
+// Documents whose page counts differ are aligned: the output names the
+// inserted page and the modified one, and the verdict is different.
+func TestAlignedOutput(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "a.pdf")
+	b := filepath.Join(dir, "b.pdf")
+	if err := fixtures.Sequence(a, []int{1, 2, 3, 4}); err != nil {
+		t.Fatal(err)
+	}
+	if err := fixtures.Sequence(b, []int{1, 90, 2, 3, 95}); err != nil {
+		t.Fatal(err)
+	}
+
+	withFlags(t, nil)
+	res, err := compareFiles(context.Background(), a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsSimilar(threshold) {
+		t.Error("different page counts passed")
+	}
+	var buf bytes.Buffer
+	if err := writeResult(&buf, res); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Status: DIFFERENT", "Modified pages: [4] (file 1 numbering)", "Inserted pages (in file 2): [2]"} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("text output lacks %q:\n%s", want, buf.String())
+		}
+	}
+
+	withFlags(t, func() { format = "json" })
+	buf.Reset()
+	if err := writeResult(&buf, res); err != nil {
+		t.Fatal(err)
+	}
+	var decoded struct {
+		InsertedPages []int `json:"inserted_pages"`
+		PageResults   []struct {
+			Page, Page2 int
+		} `json:"page_results"`
+	}
+	if err := json.Unmarshal(buf.Bytes(), &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if len(decoded.InsertedPages) != 1 || decoded.InsertedPages[0] != 2 || len(decoded.PageResults) != 4 || decoded.PageResults[3].Page2 != 5 {
+		t.Errorf("JSON = %+v", decoded)
 	}
 }

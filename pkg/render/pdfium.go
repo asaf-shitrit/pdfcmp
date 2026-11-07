@@ -2,21 +2,28 @@ package render
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"image"
+	"image/draw"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/klippa-app/go-pdfium"
+	"github.com/klippa-app/go-pdfium/enums"
 	"github.com/klippa-app/go-pdfium/requests"
 	"github.com/klippa-app/go-pdfium/responses"
 	"github.com/klippa-app/go-pdfium/webassembly"
 	"github.com/tetratelabs/wazero"
+	"github.com/tetratelabs/wazero/api"
+	"github.com/tetratelabs/wazero/experimental"
 
 	"github.com/asaf-shitrit/pdfcmp/pkg/bytewise"
+	"github.com/asaf-shitrit/pdfcmp/pkg/content"
 )
 
 // pdfiumRenderer implements Renderer using PDFium WebAssembly
@@ -46,25 +53,28 @@ var (
 	globalPool     pdfium.Pool
 	globalPoolOnce sync.Once
 	globalPoolErr  error
+	poolMu         sync.Mutex
 	poolSize       int
 )
+
+// openTimeout is how long Open waits for a free PDFium instance.
+const openTimeout = 30 * time.Second
 
 func getPool(maxWorkers int) (pdfium.Pool, error) {
 	globalPoolOnce.Do(func() {
 		// Size pool based on workers needed
-		poolSize = maxWorkers
-		if poolSize < MinPoolSize {
-			poolSize = MinPoolSize
-		}
-		if poolSize > MaxPoolSize {
-			poolSize = MaxPoolSize
-		}
+		size := min(max(maxWorkers, MinPoolSize), MaxPoolSize)
 		globalPool, globalPoolErr = webassembly.Init(webassembly.Config{
 			MinIdle:       1,
-			MaxIdle:       poolSize,
-			MaxTotal:      poolSize,
+			MaxIdle:       size,
+			MaxTotal:      size,
 			RuntimeConfig: runtimeConfig(),
 		})
+		if globalPoolErr == nil {
+			poolMu.Lock()
+			poolSize = size
+			poolMu.Unlock()
+		}
 	})
 	return globalPool, globalPoolErr
 }
@@ -82,11 +92,22 @@ func cacheDir() string {
 	return filepath.Join(base, "pdfcmp", "wazero")
 }
 
-// runtimeConfig builds the wazero config. It uses an on-disk compilation
-// cache so pdfium.wasm is compiled once, not on every process start. Any
-// cache failure falls back to an uncached runtime.
+// PoolSize returns how many PDFium instances the shared pool holds, or 0
+// before the first renderer is created. Each open Document holds one
+// instance for as long as it is open.
+func PoolSize() int {
+	poolMu.Lock()
+	defer poolMu.Unlock()
+	return poolSize
+}
+
+// runtimeConfig builds the wazero config. pdfium.wasm needs the WebAssembly
+// 2.0 features and exception handling, which go-pdfium only enables when it
+// builds the config itself. It uses an on-disk compilation cache so
+// pdfium.wasm is compiled once, not on every process start. Any cache
+// failure falls back to an uncached runtime.
 func runtimeConfig() wazero.RuntimeConfig {
-	cfg := wazero.NewRuntimeConfig()
+	cfg := wazero.NewRuntimeConfig().WithCoreFeatures(api.CoreFeaturesV2 | experimental.CoreFeaturesExceptionHandling)
 	dir := cacheDir()
 	if dir == "" {
 		return cfg
@@ -127,9 +148,19 @@ func (r *pdfiumRenderer) Open(path string) (Document, error) {
 }
 
 func (r *pdfiumRenderer) OpenWithPassword(path string, password string) (Document, error) {
-	// Get an instance from the pool
-	instance, err := r.pool.GetInstance(time.Second * 30)
+	ctx, cancel := context.WithTimeout(context.Background(), openTimeout)
+	defer cancel()
+	return r.OpenContext(ctx, path, password)
+}
+
+// OpenContext opens a PDF like OpenWithPassword, waiting for a free PDFium
+// instance until ctx is done instead of for a fixed time.
+func (r *pdfiumRenderer) OpenContext(ctx context.Context, path, password string) (Document, error) {
+	instance, err := r.pool.GetInstanceWithContext(ctx)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			err = ctxErr
+		}
 		return nil, fmt.Errorf("failed to get pdfium instance: %w", err)
 	}
 
@@ -203,7 +234,7 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 
 	// Get text count and hash
 	textChars := 0
-	var textHash uint64
+	var textHash, textBag uint64
 	var text string
 	textPageResp, err := d.instance.FPDFText_LoadPage(&requests.FPDFText_LoadPage{
 		Page: requests.Page{
@@ -227,8 +258,11 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 					Count:      textChars,
 				})
 				if err == nil && textResp.Text != "" {
-					text = textResp.Text
-					textHash = bytewise.HashBytes([]byte(text))
+					text = content.Normalize(textResp.Text)
+					if text != "" {
+						textHash = bytewise.HashBytes([]byte(text))
+						textBag = bytewise.HashBytes([]byte(content.Bag(text)))
+					}
 				}
 			}
 		}
@@ -246,6 +280,7 @@ func (d *pdfiumDocument) PageInfo(pageNum int) (PageInfo, error) {
 		TextChars:   textChars,
 		ObjectCount: objectCount,
 		TextHash:    textHash,
+		TextBag:     textBag,
 		Text:        text,
 	}, nil
 }
@@ -261,29 +296,58 @@ func (d *pdfiumDocument) RenderPage(ctx context.Context, pageNum int, opts Optio
 	default:
 	}
 
-	dpi := opts.DPI
-	if dpi <= 0 {
-		dpi = DPIStandard
-	}
+	return renderPage(d.instance, d.doc, pageNum, renderDPI(opts))
+}
 
-	renderResp, err := d.instance.RenderPageInDPI(&requests.RenderPageInDPI{
+// renderDPI returns the DPI opts asks for, or DPIStandard when it asks for
+// none.
+func renderDPI(opts Options) int {
+	if opts.DPI <= 0 {
+		return DPIStandard
+	}
+	return opts.DPI
+}
+
+// renderPage renders one page of doc, which instance has open. PDFium's
+// WebAssembly build renders into its own memory and hands back a view of it,
+// which stays allocated until it is cleaned up; the image is copied out so
+// that it can be.
+func renderPage(instance pdfium.Pdfium, doc *responses.OpenDocument, pageNum, dpi int) (image.Image, error) {
+	resp, err := instance.RenderPageInDPI(&requests.RenderPageInDPI{
 		Page: requests.Page{
 			ByIndex: &requests.PageByIndex{
-				Document: d.doc.Document,
+				Document: doc.Document,
 				Index:    pageNum,
 			},
 		},
 		DPI: dpi,
+		// Draw annotations and form fields, as viewers do: comments, stamps
+		// and filled-in or comb fields are part of what a reader sees.
+		RenderFlags: enums.FPDF_RENDER_FLAG_ANNOT,
+		RenderForm:  true,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to render page %d: %w", pageNum, err)
 	}
-
-	if renderResp.Result.Image == nil {
+	defer resp.Cleanup()
+	if resp.Result.RenderedImage == nil {
 		return nil, fmt.Errorf("render returned nil image for page %d", pageNum)
 	}
+	return cloneImage(resp.Result.RenderedImage), nil
+}
 
-	return renderResp.Result.Image, nil
+// cloneImage copies img into memory the Go runtime owns.
+func cloneImage(img image.Image) image.Image {
+	switch m := img.(type) {
+	case *image.RGBA:
+		return &image.RGBA{Pix: slices.Clone(m.Pix), Stride: m.Stride, Rect: m.Rect}
+	case *image.Gray:
+		return &image.Gray{Pix: slices.Clone(m.Pix), Stride: m.Stride, Rect: m.Rect}
+	}
+	b := img.Bounds()
+	c := image.NewRGBA(b)
+	draw.Draw(c, b, img, b.Min, draw.Src)
+	return c
 }
 
 // RenderPages renders multiple pages - uses parallel rendering when beneficial
@@ -295,161 +359,117 @@ func (d *pdfiumDocument) RenderPages(ctx context.Context, pageNums []int, opts O
 	images := make([]image.Image, len(pageNums))
 	out := make(chan RenderedPage, len(pageNums))
 
+	// On the first error the stream is stopped and waited for, so it never
+	// renders on after the caller closes the document.
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	errCh := make(chan error, 1)
 	go func() {
 		errCh <- d.RenderPagesStream(ctx, pageNums, opts, out)
 		close(out)
 	}()
 
+	var firstErr error
 	for res := range out {
-		if res.Err != nil {
-			return nil, res.Err
+		if res.Err != nil && firstErr == nil {
+			firstErr = res.Err
+			cancel()
 		}
 		images[res.Index] = res.Image
 	}
-
-	if err := <-errCh; err != nil {
-		return nil, err
+	if err := <-errCh; err != nil && firstErr == nil {
+		firstErr = err
 	}
-
+	if firstErr != nil {
+		return nil, firstErr
+	}
 	return images, nil
 }
 
+// RenderPagesStream renders pageNums on up to the renderer's worker count of
+// PDFium instances and sends each page to out as it is ready. The first
+// worker renders on the document's own instance, so the stream always makes
+// progress; the others borrow an instance from the shared pool only while
+// one is free and pages remain, so a busy pool slows a stream down instead
+// of failing it. A page that fails to render is sent with its error, and the
+// stream carries on with the rest.
 func (d *pdfiumDocument) RenderPagesStream(ctx context.Context, pageNums []int, opts Options, out chan<- RenderedPage) error {
 	if len(pageNums) == 0 {
 		return nil
 	}
-
 	numWorkers := d.renderer.workers
-	if numWorkers > len(pageNums) {
-		numWorkers = len(pageNums)
+	if opts.Workers > 0 {
+		numWorkers = opts.Workers
 	}
-	if numWorkers > poolSize {
-		numWorkers = poolSize
-	}
+	numWorkers = min(max(numWorkers, 1), len(pageNums), max(PoolSize(), 1))
+	dpi := renderDPI(opts)
 
-	// Job channel
-	type job struct {
-		index   int
-		pageNum int
-	}
+	type job struct{ index, pageNum int }
 	jobs := make(chan job, len(pageNums))
-
-	// Send all jobs
 	for i, pageNum := range pageNums {
 		jobs <- job{index: i, pageNum: pageNum}
 	}
 	close(jobs)
 
-	var wg sync.WaitGroup
-	errors := make(chan error, numWorkers)
-
-	// Worker function
-	worker := func(workerID int) {
-		defer wg.Done()
-
-		// Each worker gets its own PDFium instance and opens the document
-		instance, err := d.renderer.pool.GetInstance(time.Second * 30)
-		if err != nil {
-			errors <- fmt.Errorf("worker %d: failed to get instance: %w", workerID, err)
-			return
-		}
-		defer instance.Close()
-
-		// Open the same document
-		req := &requests.OpenDocument{
-			FilePath: &d.path,
-		}
-		if d.password != "" {
-			req.Password = &d.password
-		}
-
-		doc, err := instance.OpenDocument(req)
-		if err != nil {
-			errors <- fmt.Errorf("worker %d: failed to open document: %w", workerID, err)
-			return
-		}
-		defer instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
-
-		dpi := opts.DPI
-		if dpi <= 0 {
-			dpi = DPIStandard
-		}
-
-		// Process jobs
+	render := func(instance pdfium.Pdfium, doc *responses.OpenDocument) {
 		for j := range jobs {
-			select {
-			case <-ctx.Done():
-				out <- RenderedPage{Index: j.index, Err: ctx.Err()}
+			if err := ctx.Err(); err != nil {
+				out <- RenderedPage{Index: j.index, Err: err}
+				continue
+			}
+			img, err := renderPage(instance, doc, j.pageNum, dpi)
+			out <- RenderedPage{Index: j.index, Image: img, Err: err}
+		}
+	}
+
+	// Helpers stop waiting for an instance once the first worker has taken
+	// the last page: by then there is nothing left for them to do.
+	acquireCtx, stopAcquiring := context.WithCancel(ctx)
+	defer stopAcquiring()
+
+	var wg sync.WaitGroup
+	for range numWorkers - 1 {
+		wg.Go(func() {
+			instance, doc, ok := d.openHelper(acquireCtx)
+			if !ok {
 				return
-			default:
 			}
-
-			renderResp, err := instance.RenderPageInDPI(&requests.RenderPageInDPI{
-				Page: requests.Page{
-					ByIndex: &requests.PageByIndex{
-						Document: doc.Document,
-						Index:    j.pageNum,
-					},
-				},
-				DPI: dpi,
-			})
-			if err != nil {
-				out <- RenderedPage{Index: j.index, Err: fmt.Errorf("failed to render page %d: %w", j.pageNum, err)}
-				continue
-			}
-
-			if renderResp.Result.Image == nil {
-				out <- RenderedPage{Index: j.index, Err: fmt.Errorf("render returned nil image for page %d", j.pageNum)}
-				continue
-			}
-
-			out <- RenderedPage{
-				Index: j.index,
-				Image: renderResp.Result.Image,
-			}
-		}
+			defer func() {
+				_, _ = instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{Document: doc.Document})
+				_ = instance.Close()
+			}()
+			render(instance, doc)
+		})
 	}
-
-	// Start workers
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go worker(i)
-	}
-
-	// Wait for all workers to complete in a separate goroutine
-	go func() {
-		wg.Wait()
-		close(errors)
-	}()
-
-	// Collect all errors
-	var allErrors []error
-	for err := range errors {
-		if err != nil {
-			allErrors = append(allErrors, err)
-		}
-	}
-
-	// Return aggregated errors if any occurred
-	if len(allErrors) > 0 {
-		if len(allErrors) == 1 {
-			return allErrors[0]
-		}
-		errMsg := fmt.Sprintf("%d worker errors occurred:", len(allErrors))
-		for i, err := range allErrors {
-			errMsg += fmt.Sprintf("\n  [%d] %v", i+1, err)
-		}
-		return fmt.Errorf("%s", errMsg)
-	}
-
+	render(d.instance, d.doc)
+	stopAcquiring()
+	wg.Wait()
 	return nil
+}
+
+// openHelper borrows a pool instance and opens the document on it, waiting
+// until ctx is done for one to be free. It reports false when it got none;
+// the stream's first worker renders every page the helpers do not.
+func (d *pdfiumDocument) openHelper(ctx context.Context) (pdfium.Pdfium, *responses.OpenDocument, bool) {
+	instance, err := d.renderer.pool.GetInstanceWithContext(ctx)
+	if err != nil {
+		return nil, nil, false
+	}
+	req := &requests.OpenDocument{FilePath: &d.path}
+	if d.password != "" {
+		req.Password = &d.password
+	}
+	doc, err := instance.OpenDocument(req)
+	if err != nil {
+		_ = instance.Close()
+		return nil, nil, false
+	}
+	return instance, doc, true
 }
 
 func (d *pdfiumDocument) Close() error {
 	_, err := d.instance.FPDF_CloseDocument(&requests.FPDF_CloseDocument{
 		Document: d.doc.Document,
 	})
-	d.instance.Close()
-	return err
+	return errors.Join(err, d.instance.Close())
 }

@@ -3,8 +3,11 @@ package compare
 import (
 	"context"
 	"hash/fnv"
+	"image"
+	"image/color"
 	"testing"
 
+	"github.com/asaf-shitrit/pdfcmp/pkg/content"
 	"github.com/asaf-shitrit/pdfcmp/pkg/render"
 )
 
@@ -22,8 +25,31 @@ func (d textDoc) PageInfo(pageNum int) (render.PageInfo, error) {
 		h := fnv.New64a()
 		h.Write([]byte(s))
 		info.TextHash = h.Sum64()
+		h.Reset()
+		h.Write([]byte(content.Bag(s)))
+		info.TextBag = h.Sum64()
 	}
 	return info, nil
+}
+
+// drawText marks each render with a pixel placed by the page's text, as a
+// changed word changes some pixels of a real page.
+func drawText(text map[int]string) func(int, *image.Gray) {
+	return func(pageNum int, img *image.Gray) {
+		// A page with structure, as a real one has: a flat one moves half
+		// its pHash bits for one pixel.
+		for y := 0; y < 32; y++ {
+			for x := 0; x < 32; x++ {
+				img.Pix[y*img.Stride+x] = uint8(40 + 6*x)
+			}
+		}
+		if s, ok := text[pageNum]; ok {
+			h := fnv.New64a()
+			h.Write([]byte(s))
+			v := h.Sum64()
+			img.SetGray(int(v%32), 1+int(v/32%31), color.Gray{Y: 192})
+		}
+	}
 }
 
 const (
@@ -37,8 +63,8 @@ func compareFake(t *testing.T, text1, text2 map[int]string, opts ...Option) (*Re
 	t.Helper()
 	c := &comparer{opts: DefaultOptions()}
 	c.opts.Apply(opts...)
-	d1 := textDoc{&fakeDoc{pages: 1}, text1}
-	d2 := textDoc{&fakeDoc{pages: 1}, text2}
+	d1 := textDoc{&fakeDoc{pages: 1, draw: drawText(text1)}, text1}
+	d2 := textDoc{&fakeDoc{pages: 1, draw: drawText(text2)}, text2}
 	pages, err := c.comparePages(context.Background(), d1, d2, []int{0}, render.Options{DPI: 72})
 	if err != nil {
 		t.Fatal(err)
@@ -82,8 +108,14 @@ func TestTextChangedPresence(t *testing.T) {
 	}{
 		{"same text", map[int]string{0: totalA}, map[int]string{0: totalA}, false},
 		{"one word differs", map[int]string{0: totalA}, map[int]string{0: totalB}, true},
-		{"text against none", map[int]string{0: totalA}, nil, true},
-		{"none against text", nil, map[int]string{0: totalA}, true},
+		// A page printed to an image, or a scan given an OCR layer: the
+		// renders judge it.
+		{"text against none", map[int]string{0: totalA}, nil, false},
+		{"none against text", nil, map[int]string{0: totalA}, false},
+		{"same words reordered, as a re-save leaves them", map[int]string{0: "Total due: 1200.00 USD"}, map[int]string{0: "USD Total due:1200.00"}, false},
+		// The same characters in another order are not a text change; the
+		// renders judge such a page, and its tiles see the digits move.
+		{"two digits swapped", map[int]string{0: "Total due: 1200.00"}, map[int]string{0: "Total due: 2100.00"}, false},
 		{"no text on either, as in scans", nil, nil, false},
 	} {
 		res, _ := compareFake(t, tc.text1, tc.text2)

@@ -1,0 +1,8 @@
+version: "2"
+linters:
+  exclusions:
+    rules:
+      # Tests close what they open with a bare defer; a failed Close there
+      # cannot change what the test checks.
+      - path: _test\.go
+        linters: [errcheck]
