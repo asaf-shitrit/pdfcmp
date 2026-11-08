@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Pages are paired by their words when the page counts differ and the pages are short. Text with fewer than 60 shingles has no similarity estimate, so every pair scored 0 and the pages were paired by position: with a "Page k of N" footer, inserting one page at the start reported every later page as different and the last one as inserted. Short pages are now scored by the Jaccard similarity of their words, leaving out words with digits, so renumbered footers do not make unlike pages look alike. The inserted page is found and the others stay paired with their own counterparts.
+
 ## [0.4.0] - 2026-11-08
 
 ### Fixed
