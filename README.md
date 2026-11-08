@@ -152,8 +152,10 @@ run:
 
 Pixel tools catch nearly every edit by calling 34-45% of the unchanged
 documents different; text tools miss every change to a scan, a photo or a
-drawing. pdfcmp's weak spot is two scans of the same paper, more than half of
-which it calls different. The comparison covers free, open-source tools;
+drawing. Known misses and false alarms, such as two scans of the same paper
+called different, are tracked as
+[issues](https://github.com/asaf-shitrit/pdfcmp/issues?q=is%3Aissue+label%3Abug).
+The comparison covers free, open-source tools;
 commercial ones (Adobe Acrobat Compare, Draftable, i-net PDFC) were not
 run. See [bench/realworld/README.md](bench/realworld/README.md)
 for the data, results by kind of change, timings and how to run it.
@@ -216,8 +218,6 @@ Benchmarks include diverse PDF types to ensure robustness:
 - **Benchmarks**: `make fixtures`, then `make bench`.
 - **Linting**: `make lint`
 - **CRAP gate**: `make crap` fails when a function's CRAP score (complexity² × (1 − coverage)³ + complexity) is above 30. `make hooks` runs it before every commit.
-
-`go test -race` reports a data race inside wazero when two documents render at once ([wazero/wazero#2520](https://github.com/wazero/wazero/issues/2520)): instances that share a compiled module memoize function-type keys without synchronization.
 
 ## License
 MIT - Copyright (c) 2026 Asaf Shitrit.
