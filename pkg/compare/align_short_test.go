@@ -17,7 +17,7 @@ func shortPages(ids ...string) map[int]string {
 	return text
 }
 
-func alignFake(t *testing.T, t1, t2 map[int]string) *Result {
+func alignFake(t testing.TB, t1, t2 map[int]string) *Result {
 	t.Helper()
 	c := &comparer{opts: DefaultOptions()}
 	d1 := textDoc{&fakeDoc{pages: len(t1), draw: drawText(t1)}, t1}
@@ -67,7 +67,7 @@ func TestTextLikeness(t *testing.T) {
 		{"1200", "1300", 0},             // all numbers: compared as they are
 		{"1200", "1200", 1},
 	} {
-		if got := textLikeness(tc.a, tc.b); got < tc.want-1e-9 || got > tc.want+1e-9 {
+		if got := textLikeness(newPageText(tc.a), newPageText(tc.b)); got < tc.want-1e-9 || got > tc.want+1e-9 {
 			t.Errorf("textLikeness(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
 		}
 	}
