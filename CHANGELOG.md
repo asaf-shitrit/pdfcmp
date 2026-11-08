@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- A page whose text changed only in a separator between two digits or in an accented letter is different, not similar: "1,500" for "1.500", "12:30" for "12.30", "Müller" for "Möller" kept the page's letters and digits, so they scored as the same text (`content.Swapped`). It applies when a mark is exchanged for another (same count, other make-up); marks that come and go, as a re-save moves spaces and maps glyphs to Latin-1 letters, still count as the same text. Insertions and deletions of such marks stay with the render.
+
 ## [0.4.0] - 2026-11-08
 
 ### Fixed
