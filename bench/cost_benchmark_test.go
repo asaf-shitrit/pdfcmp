@@ -9,9 +9,7 @@ import (
 )
 
 func BenchmarkPageInfo_Cost(b *testing.B) {
-	if !fixtureExists("single_a.pdf") {
-		b.Skip("Fixtures not generated")
-	}
+	requireFixture(b, "single_a.pdf")
 
 	renderer, err := render.NewPdfiumRenderer()
 	if err != nil {
@@ -35,9 +33,7 @@ func BenchmarkPageInfo_Cost(b *testing.B) {
 }
 
 func BenchmarkRender_LowRes_Cost(b *testing.B) {
-	if !fixtureExists("single_a.pdf") {
-		b.Skip("Fixtures not generated")
-	}
+	requireFixture(b, "single_a.pdf")
 
 	renderer, err := render.NewPdfiumRenderer()
 	if err != nil {
