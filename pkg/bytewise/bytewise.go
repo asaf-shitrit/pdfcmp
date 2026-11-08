@@ -2,7 +2,9 @@ package bytewise
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -43,20 +45,33 @@ func openRegular(path string) (*os.File, int64, error) {
 	return f, info.Size(), nil
 }
 
+// openPair opens both paths with openRegular. On error nothing stays open.
+// The caller closes the files; sizes come from the same handles it reads.
+func openPair(path1, path2 string) (f1, f2 *os.File, size1, size2 int64, err error) {
+	f1, size1, err = openRegular(path1)
+	if err != nil {
+		return nil, nil, 0, 0, err
+	}
+	f2, size2, err = openRegular(path2)
+	if err != nil {
+		_ = f1.Close()
+		return nil, nil, 0, 0, err
+	}
+	return f1, f2, size1, size2, nil
+}
+
 // Compare performs byte-wise comparison of two files.
 // Both files are opened first, so an unreadable file is an error whatever the
 // sizes are. Only regular files are accepted; pipes, devices and FIFOs return
-// an error. Then sizes are checked (fast early exit) and xxHash64 computed.
+// an error. Then sizes are checked (fast early exit) and xxHash64 computed
+// from the same open handles, so the sizes and the hashes describe the same
+// files even if a path is replaced meanwhile.
 func Compare(path1, path2 string) (Result, error) {
-	f1, size1, err := openRegular(path1)
+	f1, f2, size1, size2, err := openPair(path1, path2)
 	if err != nil {
 		return Result{}, err
 	}
 	defer func() { _ = f1.Close() }()
-	f2, size2, err := openRegular(path2)
-	if err != nil {
-		return Result{}, err
-	}
 	defer func() { _ = f2.Close() }()
 
 	result := Result{
@@ -67,89 +82,88 @@ func Compare(path1, path2 string) (Result, error) {
 
 	// Fast path: if sizes differ, files are definitely different
 	if !result.SizesMatch {
-		result.Identical = false
 		return result, nil
 	}
 
-	// Compute hashes for both files
-	hash1, err := HashFile(path1)
+	hash1, err := HashReader(f1)
 	if err != nil {
 		return Result{}, fmt.Errorf("cannot hash %s: %w", path1, err)
 	}
-	hash2, err := HashFile(path2)
+	hash2, err := HashReader(f2)
 	if err != nil {
 		return Result{}, fmt.Errorf("cannot hash %s: %w", path2, err)
 	}
 
-	result.Hash1 = hash1.Hash
-	result.Hash2 = hash2.Hash
-	result.Identical = hash1.Hash == hash2.Hash
+	result.Hash1 = hash1
+	result.Hash2 = hash2
+	result.Identical = hash1 == hash2
 
 	return result, nil
 }
 
 // QuickCompare performs a size-only comparison for fast early exit.
 // Returns true only if sizes match (files might still differ in content).
+// Like Compare, it errors on unreadable files and on anything but a regular
+// file, whose size says nothing about its content.
 func QuickCompare(path1, path2 string) (bool, error) {
-	stat1, err := os.Stat(path1)
+	f1, f2, size1, size2, err := openPair(path1, path2)
 	if err != nil {
 		return false, err
 	}
-	stat2, err := os.Stat(path2)
-	if err != nil {
-		return false, err
-	}
-	return stat1.Size() == stat2.Size(), nil
+	_ = f1.Close()
+	_ = f2.Close()
+	return size1 == size2, nil
 }
 
 // CompareWithEarlyExit compares two files with streaming comparison.
 // It stops as soon as a difference is found, avoiding full file reads
-// when files differ early in their content.
+// when files differ early in their content. Only regular files are accepted.
 func CompareWithEarlyExit(path1, path2 string) (bool, error) {
-	// First check sizes
-	sizesMatch, err := QuickCompare(path1, path2)
-	if err != nil {
-		return false, err
-	}
-	if !sizesMatch {
-		return false, nil
-	}
-
-	// Open both files
-	f1, err := os.Open(path1)
+	f1, f2, size1, size2, err := openPair(path1, path2)
 	if err != nil {
 		return false, err
 	}
 	defer func() { _ = f1.Close() }()
-
-	f2, err := os.Open(path2)
-	if err != nil {
-		return false, err
-	}
 	defer func() { _ = f2.Close() }()
 
-	// Compare in chunks
+	if size1 != size2 {
+		return false, nil
+	}
+
 	buf1 := make([]byte, bufferSize)
 	buf2 := make([]byte, bufferSize)
 
 	for {
-		n1, err1 := f1.Read(buf1)
-		n2, err2 := f2.Read(buf2)
+		n1, err1 := io.ReadFull(f1, buf1)
+		n2, err2 := io.ReadFull(f2, buf2)
 
-		// Check if read sizes match
-		if n1 != n2 {
+		if n1 != n2 || !bytes.Equal(buf1[:n1], buf2[:n2]) {
 			return false, nil
 		}
-
-		// Compare the chunks
-		if !bytes.Equal(buf1[:n1], buf2[:n2]) {
-			return false, nil
+		done1, err := readDone(path1, err1)
+		if err != nil {
+			return false, err
 		}
-
-		// Handle EOF
-		if err1 != nil || err2 != nil {
-			// Both should be EOF if files are same size
-			return err1 == err2, nil
+		done2, err := readDone(path2, err2)
+		if err != nil {
+			return false, err
 		}
+		// Equal read lengths mean both files end in the same chunk.
+		if done1 || done2 {
+			return true, nil
+		}
+	}
+}
+
+// readDone reports whether a ReadFull result means the file has ended. A real
+// read error is returned with the path.
+func readDone(path string, err error) (bool, error) {
+	switch {
+	case err == nil:
+		return false, nil
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+		return true, nil
+	default:
+		return false, fmt.Errorf("cannot read %s: %w", path, err)
 	}
 }
