@@ -19,6 +19,7 @@ type pdfSpec struct {
 	Content string   // content stream
 	Image   string   // full object 6 (an image XObject), or "" for a 2x2 gray one
 	Objs    []string // objects 7, 8, ...: the body between "obj" and "endobj"
+	Pages   string   // boxes written on /Pages, inherited by the page; "" puts MediaBox [0 0 600 800] on the page
 }
 
 func (s pdfSpec) write(path string) error {
@@ -31,8 +32,12 @@ func (s pdfSpec) write(path string) error {
 	}
 	b.WriteString("%PDF-1.7\n")
 	add(fmt.Sprintf("1 0 obj\n<< /Type /Catalog /Pages 2 0 R %s >>\nendobj\n", s.Catalog))
-	add("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n")
-	add(fmt.Sprintf("3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 600 800] %s /Resources << /Font << /F1 5 0 R >> /XObject << /Im 6 0 R >> %s >> /Contents 4 0 R >>\nendobj\n", s.Page, s.Res))
+	media := "/MediaBox [0 0 600 800]"
+	if s.Pages != "" {
+		media = ""
+	}
+	add(fmt.Sprintf("2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 %s >>\nendobj\n", s.Pages))
+	add(fmt.Sprintf("3 0 obj\n<< /Type /Page /Parent 2 0 R %s %s /Resources << /Font << /F1 5 0 R >> /XObject << /Im 6 0 R >> %s >> /Contents 4 0 R >>\nendobj\n", media, s.Page, s.Res))
 	add(fmt.Sprintf("4 0 obj\n<< /Length %d >>\nstream\n%s\nendstream\nendobj\n", len(s.Content), s.Content))
 	add("5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n")
 	add("6 0 obj\n" + img + "\nendobj\n")

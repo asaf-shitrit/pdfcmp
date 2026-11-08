@@ -35,9 +35,10 @@ import (
 // the pixels PDFium decodes from it, which carry a /Decode array or a palette.
 //
 // What the hash cannot capture is not guessed: ContentHash returns
-// ErrNotHashable, and the planner renders the page. That covers an object
-// (also inside a form) with an optional content mark, a layer a viewer can
-// switch off; a shading object; an image in a colour space other than
+// ErrNotHashable, and the planner renders the page. That covers a document
+// with optional content (/OCProperties), as a form or image XObject can be
+// a layer through its own /OC entry, which go-pdfium does not report; an
+// object (also inside a form) with an optional content mark; a shading object; an image in a colour space other than
 // DeviceGray, DeviceRGB or DeviceCMYK that is too large to hash its pixels; and
 // a page with more than maxPageSegments path segments. Known gaps, as
 // go-pdfium has no getter for them: the blend mode of an ExtGState (/BM), a
@@ -46,6 +47,9 @@ import (
 func (d *pdfiumDocument) ContentHash(pageNum int) (uint64, error) {
 	if pageNum < 0 || pageNum >= d.pageCount {
 		return 0, fmt.Errorf("page %d out of range [0, %d)", pageNum, d.pageCount)
+	}
+	if d.hasOptionalContent() {
+		return 0, errOptionalContent
 	}
 	loaded, err := d.instance.FPDF_LoadPage(&requests.FPDF_LoadPage{Document: d.doc.Document, Index: pageNum})
 	if err != nil {
@@ -133,51 +137,26 @@ func writeCoord(h *xxhash.Digest, v float32) {
 }
 
 // hashPageGeometry writes how the page is laid out into h: its rotation and
-// the box that is shown, the CropBox (the MediaBox when there is none)
-// cut to the MediaBox. A rotated or cropped page shows the same objects
-// differently, so its content hash must differ; a page without a CropBox and
-// one whose CropBox is its MediaBox look the same, so they hash the same. A
-// value the page does not have is part of its identity, not an error.
+// the box that is shown, as PDFium resolves it: the CropBox (the MediaBox
+// when there is none) cut to the MediaBox, either one inherited from the
+// /Pages tree when the page has none of its own (gofpdf writes the MediaBox
+// there). A rotated or cropped page shows the same objects differently, so
+// its content hash must differ; a page without a CropBox and one whose
+// CropBox is its MediaBox look the same, so they hash the same. A value the
+// page does not have is part of its identity, not an error.
 func (d *pdfiumDocument) hashPageGeometry(h *xxhash.Digest, page requests.Page) {
 	if r, err := d.instance.FPDFPage_GetRotation(&requests.FPDFPage_GetRotation{Page: page}); err == nil {
 		writeUint(h, uint64(((r.PageRotation%4)+4)%4))
 	}
-	media, err := d.instance.FPDFPage_GetMediaBox(&requests.FPDFPage_GetMediaBox{Page: page})
+	bb, err := d.instance.FPDF_GetPageBoundingBox(&requests.FPDF_GetPageBoundingBox{Page: page})
 	if err != nil {
 		writeUint(h, 0)
 		return
 	}
-	box, empty := [4]float32{media.Left, media.Bottom, media.Right, media.Top}, false
-	if crop, err := d.instance.FPDFPage_GetCropBox(&requests.FPDFPage_GetCropBox{Page: page}); err == nil {
-		box, empty = intersectBoxes(box, [4]float32{crop.Left, crop.Bottom, crop.Right, crop.Top})
-	}
-	if empty {
-		// A distinct marker, so an empty box is not an all-zero box.
-		writeUint(h, math.MaxUint64)
-	} else {
-		for _, v := range box {
-			writeCoord(h, v)
-		}
+	for _, v := range []float32{bb.Rect.Left, bb.Rect.Bottom, bb.Rect.Right, bb.Rect.Top} {
+		writeCoord(h, v)
 	}
 	writeUint(h, 0)
-}
-
-// normalizeBox puts a box's corners in order (left, bottom, right, top):
-// PDF allows any two opposite corners, and PDFium reads the box the same.
-func normalizeBox(b [4]float32) [4]float32 {
-	return [4]float32{min(b[0], b[2]), min(b[1], b[3]), max(b[0], b[2]), max(b[1], b[3])}
-}
-
-// intersectBoxes returns the part of a box (left, bottom, right, top) that
-// lies in the other, with corners put in order first. empty is true when
-// the boxes do not overlap.
-func intersectBoxes(a, b [4]float32) (box [4]float32, empty bool) {
-	a, b = normalizeBox(a), normalizeBox(b)
-	r := [4]float32{max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])}
-	if r[0] > r[2] || r[1] > r[3] {
-		return [4]float32{}, true
-	}
-	return r, false
 }
 
 // hashOrientation writes what a transform matrix shows that an object's

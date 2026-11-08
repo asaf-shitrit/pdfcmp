@@ -40,6 +40,9 @@ type pdfiumDocument struct {
 	pageCount int
 	path      string
 	password  string
+
+	ocOnce sync.Once // guards hasOC
+	hasOC  bool      // the document has optional content (see hasOptionalContent)
 }
 
 // Pool size limits
