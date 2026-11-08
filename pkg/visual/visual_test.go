@@ -132,3 +132,26 @@ func TestPHashFast(t *testing.T) {
 		t.Errorf("solid image: PHashFast = %#016x, want 0 (no pixel above the mean)", got)
 	}
 }
+
+func TestPHash_InverseIsFullyOpposite(t *testing.T) {
+	// Pseudo-random pattern; the inverse negates every AC coefficient, so
+	// all 64 bits must flip and similarity must be 0.
+	img := image.NewGray(image.Rect(0, 0, 32, 32))
+	inv := image.NewGray(image.Rect(0, 0, 32, 32))
+	seed := uint32(1)
+	for y := 0; y < 32; y++ {
+		for x := 0; x < 32; x++ {
+			seed = seed*1664525 + 1013904223
+			v := uint8(seed >> 24)
+			img.SetGray(x, y, color.Gray{Y: v})
+			inv.SetGray(x, y, color.Gray{Y: 255 - v})
+		}
+	}
+	h1, h2 := PHash(img), PHash(inv)
+	if d := HammingDistance(h1, h2); d != HashBits {
+		t.Errorf("distance = %d, want %d (h1=%016x h2=%016x)", d, HashBits, h1, h2)
+	}
+	if s := SimilarityFromHashes(h1, h2); s != 0 {
+		t.Errorf("similarity = %v, want 0", s)
+	}
+}

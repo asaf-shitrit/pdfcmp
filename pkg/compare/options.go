@@ -145,7 +145,7 @@ func DefaultOptions() Options {
 		TextChange:          TextChangeFails,
 		Tiles:               true,
 		DPI:                 render.DPIStandard,
-		Workers:             runtime.NumCPU(),
+		Workers:             DefaultWorkers(),
 		SimilarityThreshold: DefaultSimilarityThreshold,
 		Sampling:            SamplingAuto,
 		MaxMemoryMB:         DefaultMaxMemoryMB,
@@ -260,9 +260,12 @@ func (o *Options) Validate() error {
 		errs = append(errs, fmt.Errorf("workers must be between %d and %d, got %d", MinWorkers, MaxWorkers, o.Workers))
 	}
 
-	if o.SimilarityThreshold < 0.0 || o.SimilarityThreshold > 1.0 {
+	// The negated form rejects NaN, for which every comparison is false.
+	if !(o.SimilarityThreshold >= 0.0 && o.SimilarityThreshold <= 1.0) {
 		errs = append(errs, fmt.Errorf("similarity threshold must be between 0.0 and 1.0, got %f", o.SimilarityThreshold))
 	}
+
+	errs = append(errs, o.validateEnums()...)
 
 	if o.TextHash < TextMinHash || o.TextHash > TextHashOff {
 		errs = append(errs, fmt.Errorf("unknown text hash type %d", o.TextHash))
@@ -280,4 +283,31 @@ func (o *Options) Validate() error {
 		return errors.Join(errs...)
 	}
 	return nil
+}
+
+// validateEnums returns an error for each option whose value is not one of
+// its type's constants.
+func (o *Options) validateEnums() []error {
+	var errs []error
+	if o.Mode < ModeAuto || o.Mode > ModeFull {
+		errs = append(errs, fmt.Errorf("unknown mode %d", o.Mode))
+	}
+	if o.HashType < HashBoth || o.HashType > HashPHash {
+		errs = append(errs, fmt.Errorf("unknown hash type %d", o.HashType))
+	}
+	if o.Sampling < SamplingAuto || o.Sampling > SamplingThumbnailOnly {
+		errs = append(errs, fmt.Errorf("unknown sampling strategy %d", o.Sampling))
+	}
+	return errs
+}
+
+// DefaultWorkers is the default worker count: one per CPU, capped at
+// MaxWorkers so that the default always passes Validate.
+func DefaultWorkers() int {
+	return workersFor(runtime.NumCPU())
+}
+
+// workersFor returns the default worker count for a host with cpus CPUs.
+func workersFor(cpus int) int {
+	return min(max(cpus, MinWorkers), MaxWorkers)
 }
