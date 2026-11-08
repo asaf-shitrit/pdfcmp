@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- A page's content hash covers the page's rotation, MediaBox and CropBox, and each object's transform matrix, clip path and text render mode. A page rotated, cropped or clipped differently, text made invisible, or an image flipped within the same bounds left the hash alone, so the page was scored identical without being rendered.
 - The pHash filled 63 of its 64 bits (it skipped the DC term and used nothing in its place) while similarity divides by 64, so two opposite images scored 1/64 instead of 0 and every pHash score was slightly high. The hash now also uses the first horizontal AC term outside the 8x8 block, so it fills all 64 bits.
 - `--memory` sizes renders from the largest page of either document among the pages to render, not the first page of the first document. A document with an A4 cover and A0 pages could peak at several GB under `--memory 512`; it now runs with fewer workers. With no page size readable it uses one worker. Uniform A4 documents are unaffected.
 - `--threshold NaN` is rejected. Every comparison with NaN is false, so the range check let it through and `pdfcmp compare a.pdf a.pdf -t NaN` reported IDENTICAL yet exited 1. `Options.Validate` also rejects unknown mode, hash type and sampling values.
