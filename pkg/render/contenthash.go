@@ -14,8 +14,8 @@ import (
 // ContentHash hashes a page's graphical content: first how the page is laid
 // out, its rotation and the visible box (CropBox cut to MediaBox); then for every
 // page object its type, bounds (rounded to 0.01 pt), transform (the whole
-// matrix for images and forms, only mirror and quarter turn for text; paths
-// have none, their bounds follow it), fill
+// matrix for images and forms, only mirror and quarter turn for text; for
+// paths their segments with points in page space), fill
 // and stroke colour, clip path, for text objects the render mode, and for
 // image objects the raw image data, down into form objects, where PDF
 // writers such as LaTeX put included figures; then the page's annotations,
@@ -127,25 +127,37 @@ func (d *pdfiumDocument) hashPageGeometry(h *xxhash.Digest, page requests.Page) 
 		writeUint(h, 0)
 		return
 	}
-	box := [4]float32{media.Left, media.Bottom, media.Right, media.Top}
+	box, empty := [4]float32{media.Left, media.Bottom, media.Right, media.Top}, false
 	if crop, err := d.instance.FPDFPage_GetCropBox(&requests.FPDFPage_GetCropBox{Page: page}); err == nil {
-		box = intersectBoxes(box, [4]float32{crop.Left, crop.Bottom, crop.Right, crop.Top})
+		box, empty = intersectBoxes(box, [4]float32{crop.Left, crop.Bottom, crop.Right, crop.Top})
 	}
-	for _, v := range box {
-		writeCoord(h, v)
+	if empty {
+		// A distinct marker, so an empty box is not an all-zero box.
+		writeUint(h, math.MaxUint64)
+	} else {
+		for _, v := range box {
+			writeCoord(h, v)
+		}
 	}
 	writeUint(h, 0)
 }
 
+// normalizeBox puts a box's corners in order (left, bottom, right, top):
+// PDF allows any two opposite corners, and PDFium reads the box the same.
+func normalizeBox(b [4]float32) [4]float32 {
+	return [4]float32{min(b[0], b[2]), min(b[1], b[3]), max(b[0], b[2]), max(b[1], b[3])}
+}
+
 // intersectBoxes returns the part of a box (left, bottom, right, top) that
-// lies in the other. Boxes that do not overlap give an empty box at a's
-// corner, the same for any such pair.
-func intersectBoxes(a, b [4]float32) [4]float32 {
+// lies in the other, with corners put in order first. empty is true when
+// the boxes do not overlap.
+func intersectBoxes(a, b [4]float32) (box [4]float32, empty bool) {
+	a, b = normalizeBox(a), normalizeBox(b)
 	r := [4]float32{max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])}
 	if r[0] > r[2] || r[1] > r[3] {
-		return [4]float32{}
+		return [4]float32{}, true
 	}
-	return r
+	return r, false
 }
 
 // hashOrientation writes what a transform matrix shows that an object's
@@ -208,6 +220,49 @@ func (d *pdfiumDocument) hashClipPath(h *xxhash.Digest, obj references.FPDF_PAGE
 	}
 }
 
+// maxHashedSegments bounds how many segments of one path hashPath reads
+// (three calls into PDFium each): a longer path is sampled at an even
+// stride, and its segment count is hashed too.
+const maxHashedSegments = 256
+
+// hashPath writes a path object's segments into h: their count, and for
+// each one read its type, close flag and point mapped through the object
+// matrix into page space. Bounds alone do not tell a mirrored or rotated
+// drawing from the original; the page-space points do, and they are the
+// same however a "cm" splits the transform between the matrix and the points.
+func (d *pdfiumDocument) hashPath(h *xxhash.Digest, obj references.FPDF_PAGEOBJECT) {
+	n, err := d.instance.FPDFPath_CountSegments(&requests.FPDFPath_CountSegments{PageObject: obj})
+	if err != nil {
+		writeUint(h, 0)
+		return
+	}
+	writeUint(h, uint64(n.Count)+1)
+	var a, b, c, dd, e, f float32 = 1, 0, 0, 1, 0, 0
+	if m, err := d.instance.FPDFPageObj_GetMatrix(&requests.FPDFPageObj_GetMatrix{PageObject: obj}); err == nil {
+		a, b, c, dd, e, f = m.Matrix.A, m.Matrix.B, m.Matrix.C, m.Matrix.D, m.Matrix.E, m.Matrix.F
+	}
+	stride := (n.Count + maxHashedSegments - 1) / maxHashedSegments
+	stride = max(stride, 1)
+	for i := 0; i < n.Count; i += stride {
+		seg, err := d.instance.FPDFPath_GetPathSegment(&requests.FPDFPath_GetPathSegment{PageObject: obj, Index: i})
+		if err != nil {
+			continue
+		}
+		var flags uint64
+		if t, err := d.instance.FPDFPathSegment_GetType(&requests.FPDFPathSegment_GetType{PathSegment: seg.PathSegment}); err == nil {
+			flags = uint64(t.Type) + 1
+		}
+		if cl, err := d.instance.FPDFPathSegment_GetClose(&requests.FPDFPathSegment_GetClose{PathSegment: seg.PathSegment}); err == nil && cl.IsClose {
+			flags |= 1 << 8
+		}
+		writeUint(h, flags)
+		if pt, err := d.instance.FPDFPathSegment_GetPoint(&requests.FPDFPathSegment_GetPoint{PathSegment: seg.PathSegment}); err == nil {
+			writeCoord(h, a*pt.X+c*pt.Y+e)
+			writeCoord(h, b*pt.X+dd*pt.Y+f)
+		}
+	}
+}
+
 // hashObject writes one page object's identity into h.
 func (d *pdfiumDocument) hashObject(h *xxhash.Digest, obj references.FPDF_PAGEOBJECT, depth int) error {
 	typeResp, err := d.instance.FPDFPageObj_GetType(&requests.FPDFPageObj_GetType{PageObject: obj})
@@ -226,9 +281,9 @@ func (d *pdfiumDocument) hashObject(h *xxhash.Digest, obj references.FPDF_PAGEOB
 
 	// The matrix tells a flipped image or form from an upright one with the
 	// same bounds. For text and paths the bounds already follow the matrix,
-	// so scaling the same drawing by a "cm" must not change the hash; only
-	// text, whose mirror or quarter turn the bounds can hide, adds its
-	// orientation. The render mode tells an invisible text object from a
+	// so scaling the same drawing by a "cm" must not change the hash; text,
+	// whose mirror or quarter turn the bounds can hide, adds its orientation,
+	// and a path its page-space segments (hashPath). The render mode tells an invisible text object from a
 	// visible one; the clip path, an object cut away from one that shows.
 	if m, err := d.instance.FPDFPageObj_GetMatrix(&requests.FPDFPageObj_GetMatrix{PageObject: obj}); err == nil {
 		switch typeResp.Type {
@@ -244,6 +299,9 @@ func (d *pdfiumDocument) hashObject(h *xxhash.Digest, obj references.FPDF_PAGEOB
 		if mode, err := d.instance.FPDFTextObj_GetTextRenderMode(&requests.FPDFTextObj_GetTextRenderMode{PageObject: obj}); err == nil {
 			writeUint(h, uint64(mode.TextRenderMode)+1)
 		}
+	}
+	if typeResp.Type == enums.FPDF_PAGEOBJ_PATH {
+		d.hashPath(h, obj)
 	}
 	d.hashClipPath(h, obj)
 

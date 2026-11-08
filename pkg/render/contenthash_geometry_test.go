@@ -38,6 +38,7 @@ const (
 	hashRect  = "0 0 1 rg 30 100 200 100 re f"
 	hashImage = "q 300 0 0 300 100 50 cm /Im Do Q"
 	pageBox   = "0 0 600 800"
+	arrow     = "0 0 1 rg 100 100 m 300 200 l 100 300 l f"
 )
 
 // Content that renders differently must not hash like the original, since
@@ -73,6 +74,12 @@ func TestContentHashGeometryAndDrawingState(t *testing.T) {
 		{"crop box larger than media box", rawPDF(pageBox, "", base), rawPDF(pageBox, "/CropBox [-50 -50 700 900]", base), false},
 		{"crop box partly outside media box", rawPDF(pageBox, "/CropBox [0 0 600 300]", base), rawPDF(pageBox, "/CropBox [-50 0 700 300]", base), false},
 		{"path drawn directly against under a scaling cm", rawPDF(pageBox, "", hashText+hashRect), rawPDF(pageBox, "", hashText+"0 0 1 rg q 2 0 0 2 0 0 cm 15 50 100 50 re f Q"), false},
+		{"mirrored arrow", rawPDF(pageBox, "", arrow), rawPDF(pageBox, "", "0 0 1 rg q -1 0 0 1 400 0 cm 100 100 m 300 200 l 100 300 l f Q"), true},
+		{"rotated arrow", rawPDF(pageBox, "", arrow), rawPDF(pageBox, "", "0 0 1 rg q -1 0 0 -1 400 400 cm 100 100 m 300 200 l 100 300 l f Q"), true},
+		{"arrow under a scaling cm", rawPDF(pageBox, "", arrow), rawPDF(pageBox, "", "0 0 1 rg q 2 0 0 2 0 0 cm 50 50 m 150 100 l 50 150 l f Q"), false},
+		{"inverted crop box against the same box in order", rawPDF(pageBox, "/CropBox [600 300 0 0]", base), rawPDF(pageBox, "/CropBox [0 0 600 300]", base), false},
+		{"inverted crop box against a disjoint one", rawPDF(pageBox, "/CropBox [600 300 0 0]", base), rawPDF(pageBox, "/CropBox [700 0 800 100]", base), true},
+		{"two different disjoint crop boxes", rawPDF(pageBox, "/CropBox [700 0 800 100]", base), rawPDF(pageBox, "/CropBox [0 900 100 1000]", base), false},
 		{"mirrored text", rawPDF(pageBox, "", "BT /F1 24 Tf 1 0 0 1 30 400 Tm (Hello) Tj ET"), rawPDF(pageBox, "", "BT /F1 24 Tf -1 0 0 1 30 400 Tm (Hello) Tj ET"), true},
 	} {
 		h := contentHashes(t, tc.a, tc.b)
