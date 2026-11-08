@@ -12,8 +12,10 @@ import (
 )
 
 // ContentHash hashes a page's graphical content: first how the page is laid
-// out, its rotation and its media and crop boxes; then for every
-// page object its type, bounds (rounded to 0.01 pt), transform matrix, fill
+// out, its rotation and the visible box (CropBox cut to MediaBox); then for every
+// page object its type, bounds (rounded to 0.01 pt), transform (the whole
+// matrix for images and forms, only mirror and quarter turn for text; paths
+// have none, their bounds follow it), fill
 // and stroke colour, clip path, for text objects the render mode, and for
 // image objects the raw image data, down into form objects, where PDF
 // writers such as LaTeX put included figures; then the page's annotations,
@@ -111,26 +113,61 @@ func writeCoord(h *xxhash.Digest, v float32) {
 }
 
 // hashPageGeometry writes how the page is laid out into h: its rotation and
-// media box and its crop box. A rotated or cropped page shows the same objects differently, so its
-// content hash must differ. A value the page does not have is part of its
-// identity, not an error.
+// the box that is shown, the CropBox (the MediaBox when there is none)
+// cut to the MediaBox. A rotated or cropped page shows the same objects
+// differently, so its content hash must differ; a page without a CropBox and
+// one whose CropBox is its MediaBox look the same, so they hash the same. A
+// value the page does not have is part of its identity, not an error.
 func (d *pdfiumDocument) hashPageGeometry(h *xxhash.Digest, page requests.Page) {
 	if r, err := d.instance.FPDFPage_GetRotation(&requests.FPDFPage_GetRotation{Page: page}); err == nil {
-		writeUint(h, uint64(r.PageRotation))
+		writeUint(h, uint64(((r.PageRotation%4)+4)%4))
 	}
-	media, mediaErr := d.instance.FPDFPage_GetMediaBox(&requests.FPDFPage_GetMediaBox{Page: page})
-	if mediaErr == nil {
-		for _, v := range []float32{media.Left, media.Bottom, media.Right, media.Top} {
-			writeCoord(h, v)
-		}
+	media, err := d.instance.FPDFPage_GetMediaBox(&requests.FPDFPage_GetMediaBox{Page: page})
+	if err != nil {
+		writeUint(h, 0)
+		return
 	}
-	writeUint(h, 0)
+	box := [4]float32{media.Left, media.Bottom, media.Right, media.Top}
 	if crop, err := d.instance.FPDFPage_GetCropBox(&requests.FPDFPage_GetCropBox{Page: page}); err == nil {
-		for _, v := range []float32{crop.Left, crop.Bottom, crop.Right, crop.Top} {
-			writeCoord(h, v)
-		}
+		box = intersectBoxes(box, [4]float32{crop.Left, crop.Bottom, crop.Right, crop.Top})
+	}
+	for _, v := range box {
+		writeCoord(h, v)
 	}
 	writeUint(h, 0)
+}
+
+// intersectBoxes returns the part of a box (left, bottom, right, top) that
+// lies in the other. Boxes that do not overlap give an empty box at a's
+// corner, the same for any such pair.
+func intersectBoxes(a, b [4]float32) [4]float32 {
+	r := [4]float32{max(a[0], b[0]), max(a[1], b[1]), min(a[2], b[2]), min(a[3], b[3])}
+	if r[0] > r[2] || r[1] > r[3] {
+		return [4]float32{}
+	}
+	return r
+}
+
+// hashOrientation writes what a transform matrix shows that an object's
+// bounds do not: whether it mirrors (the sign of the determinant) and which
+// quarter turn its x axis points to. Scale and shift are in the bounds.
+func hashOrientation(h *xxhash.Digest, m [4]float32) {
+	a, b, c, d := m[0], m[1], m[2], m[3]
+	var flags uint64
+	if a*d-b*c < 0 {
+		flags |= 1
+	}
+	ax, ay := math.Abs(float64(a)), math.Abs(float64(b))
+	switch {
+	case ax >= ay && a >= 0:
+	case ax >= ay:
+		flags |= 2 << 1
+	case b >= 0:
+		flags |= 1 << 1
+	default:
+		flags |= 3 << 1
+	}
+	writeUint(h, flags+1)
 }
 
 // hashClipPath writes the clip path of a page object into h: the number of
@@ -187,12 +224,20 @@ func (d *pdfiumDocument) hashObject(h *xxhash.Digest, obj references.FPDF_PAGEOB
 		writeCoord(h, v)
 	}
 
-	// The matrix tells a flipped or mirrored object from an upright one with
-	// the same bounds; the render mode, an invisible text object from a
+	// The matrix tells a flipped image or form from an upright one with the
+	// same bounds. For text and paths the bounds already follow the matrix,
+	// so scaling the same drawing by a "cm" must not change the hash; only
+	// text, whose mirror or quarter turn the bounds can hide, adds its
+	// orientation. The render mode tells an invisible text object from a
 	// visible one; the clip path, an object cut away from one that shows.
 	if m, err := d.instance.FPDFPageObj_GetMatrix(&requests.FPDFPageObj_GetMatrix{PageObject: obj}); err == nil {
-		for _, v := range []float32{m.Matrix.A, m.Matrix.B, m.Matrix.C, m.Matrix.D, m.Matrix.E, m.Matrix.F} {
-			writeCoord(h, v)
+		switch typeResp.Type {
+		case enums.FPDF_PAGEOBJ_IMAGE, enums.FPDF_PAGEOBJ_FORM:
+			for _, v := range []float32{m.Matrix.A, m.Matrix.B, m.Matrix.C, m.Matrix.D, m.Matrix.E, m.Matrix.F} {
+				writeCoord(h, v)
+			}
+		case enums.FPDF_PAGEOBJ_TEXT:
+			hashOrientation(h, [4]float32{m.Matrix.A, m.Matrix.B, m.Matrix.C, m.Matrix.D})
 		}
 	}
 	if typeResp.Type == enums.FPDF_PAGEOBJ_TEXT {

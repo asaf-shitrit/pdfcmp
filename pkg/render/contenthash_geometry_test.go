@@ -67,6 +67,13 @@ func TestContentHashGeometryAndDrawingState(t *testing.T) {
 		{"same clip", rawPDF(pageBox, "", clipped), rawPDF(pageBox, "", clipped), false},
 		{"same image", rawPDF(pageBox, "", hashText+hashImage), rawPDF(pageBox, "", hashText+hashImage), false},
 		{"flipped image", rawPDF(pageBox, "", hashText+hashImage), rawPDF(pageBox, "", hashText+"q -300 0 0 -300 400 350 cm /Im Do Q"), true},
+		// The same look written differently must hash the same, or the
+		// planner renders the page for nothing.
+		{"no crop box against crop box equal to media box", rawPDF(pageBox, "", base), rawPDF(pageBox, "/CropBox [0 0 600 800]", base), false},
+		{"crop box larger than media box", rawPDF(pageBox, "", base), rawPDF(pageBox, "/CropBox [-50 -50 700 900]", base), false},
+		{"crop box partly outside media box", rawPDF(pageBox, "/CropBox [0 0 600 300]", base), rawPDF(pageBox, "/CropBox [-50 0 700 300]", base), false},
+		{"path drawn directly against under a scaling cm", rawPDF(pageBox, "", hashText+hashRect), rawPDF(pageBox, "", hashText+"0 0 1 rg q 2 0 0 2 0 0 cm 15 50 100 50 re f Q"), false},
+		{"mirrored text", rawPDF(pageBox, "", "BT /F1 24 Tf 1 0 0 1 30 400 Tm (Hello) Tj ET"), rawPDF(pageBox, "", "BT /F1 24 Tf -1 0 0 1 30 400 Tm (Hello) Tj ET"), true},
 	} {
 		h := contentHashes(t, tc.a, tc.b)
 		if (h[0] != h[1]) != tc.differ {
