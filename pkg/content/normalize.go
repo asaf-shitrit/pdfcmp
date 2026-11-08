@@ -72,7 +72,11 @@ func counted(r rune) bool {
 // space an extractor moved ("2035. 3" for "2035.3") cannot show as a
 // difference. It holds when the stripped texts have the same length, differ
 // somewhere, and at least one difference is one of those marks on both sides:
-// a separator between digits, or a letter touching an ASCII letter. Other
+// a separator between digits, or an accented letter on both sides that
+// touched an ASCII letter in at least one text. Touching is judged in each
+// original text, so a space moved beside the letter cannot hide it, but a
+// remap that touches a letter in neither text ("Þ item" for "ß item", which
+// whitespace removal would otherwise glue to "i") is not taken for one. Other
 // differences are tolerated only between characters Bag does not count, such
 // as a bullet remapped to "ï" or "¥", which is re-save noise and must not
 // hide an exchange elsewhere. A difference in a letter or digit Bag counts, or
@@ -89,7 +93,7 @@ func Swapped(a, b string) bool {
 		if x.r == y.r {
 			continue
 		}
-		if separatorAt(ra, i) && separatorAt(rb, i) || x.inWord() && y.inWord() {
+		if separatorAt(ra, i) && separatorAt(rb, i) || x.accented() && y.accented() && (x.nextTo || y.nextTo) {
 			found = true
 		} else if counted(x.r) || counted(y.r) {
 			return false
@@ -105,8 +109,10 @@ type glyph struct {
 	nextTo bool
 }
 
-func (g glyph) inWord() bool {
-	return g.nextTo && g.r > 0x7F && g.r <= 0x2FF && g.r != 'ï' && unicode.IsLetter(g.r)
+// accented reports whether g is a Latin-1 or Latin Extended letter Bag may
+// count differently between texts. Whether it sits inside a word is nextTo.
+func (g glyph) accented() bool {
+	return g.r > 0x7F && g.r <= 0x2FF && g.r != 'ï' && unicode.IsLetter(g.r)
 }
 
 func strip(text string) []glyph {

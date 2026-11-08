@@ -105,6 +105,9 @@ func TestSwapped(t *testing.T) {
 		{"swap beside a bullet remap", "• Total 1,500 EUR", "¥ Total 1.500 EUR", true},
 		{"swap beside an i diaeresis remap", "• Total 1,500 EUR", "ï Total 1.500 EUR", true},
 		{"swap beside a counted change", "• Total 1,500 EUR", "¥ Total 1.600 EUR", false},
+		{"accent swap with a moved space", "55-718 café EUR 75.227", "55-718caf å EUR 75.227", true},
+		{"accent swap, space moved beside it", "Müller AG", "M ö ller AG", true},
+		{"moved space only, accented", "55-718 café EUR", "55-718caf é EUR", false},
 		{"different length", "Müller", "Möller x", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
