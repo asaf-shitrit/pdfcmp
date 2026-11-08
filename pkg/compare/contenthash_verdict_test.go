@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/asaf-shitrit/pdfcmp/pkg/render"
 )
 
 // verdictPDF writes a one-page PDF, 600x800 pt, with the given extra page
@@ -76,6 +78,51 @@ func TestVisiblyDifferentPagesWithSameObjectsAreDifferent(t *testing.T) {
 			}
 			if tc.wantEqual && r.SimilarityScore != 1 {
 				t.Errorf("identical pages scored %v, want 1", r.SimilarityScore)
+			}
+		})
+	}
+}
+
+// A page that only differs in how it is written (a CropBox equal to the
+// MediaBox, a path drawn under a scaling cm) must be decided by its text and
+// content hash, without rendering.
+func TestSameLookWrittenDifferentlyIsNotRendered(t *testing.T) {
+	const text = "BT /F1 24 Tf 30 400 Td (Hello world invoice 12345) Tj ET "
+	for _, tc := range []struct {
+		name          string
+		aExtra, aBody string
+		bExtra, bBody string
+	}{
+		{"crop box equal to media box", "", text + "0 0 1 rg 30 100 200 100 re f", "/CropBox [0 0 600 800]", text + "0 0 1 rg 30 100 200 100 re f"},
+		{"scaling cm", "", text + "0 0 1 rg 30 100 200 100 re f", "", text + "0 0 1 rg q 2 0 0 2 0 0 cm 15 50 100 50 re f Q"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			a, b := filepath.Join(dir, "a.pdf"), filepath.Join(dir, "b.pdf")
+			verdictPDF(t, a, tc.aExtra, tc.aBody)
+			verdictPDF(t, b, tc.bExtra, tc.bBody)
+			r, err := render.NewPdfiumRenderer()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer r.Close()
+			d1, err := r.Open(a)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d1.Close()
+			d2, err := r.Open(b)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer d2.Close()
+			c := &comparer{renderer: r, opts: DefaultOptions()}
+			plan, err := c.planPages(context.Background(), d1, d2, []pagePair{{p1: 0, p2: 0}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.render) != 0 || plan.results[0].Similarity != 1 {
+				t.Errorf("page scheduled for rendering (%v), want scored 1 from text and hash: %+v", plan.render, plan.results[0])
 			}
 		})
 	}
