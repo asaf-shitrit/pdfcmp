@@ -31,30 +31,30 @@ test-race:
 	go test -race -v ./...
 
 # Run benchmarks
-bench:
+bench: fixtures
 	go test -bench=. -benchmem ./bench/...
 
 # Run specific benchmark
-bench-hash:
+bench-hash: fixtures
 	go test -bench=Hash -benchmem ./bench/...
 
-bench-byte:
+bench-byte: fixtures
 	go test -bench=Byte -benchmem ./bench/...
 
-bench-compare:
+bench-compare: fixtures
 	go test -bench=Compare -benchmem ./bench/...
 
 # Run all benchmarks with count for statistical significance
-bench-full:
+bench-full: fixtures
 	go test -bench=. -benchmem -count=5 ./bench/... | tee benchmark_results.txt
 
 # Profile CPU
-profile-cpu:
+profile-cpu: fixtures
 	go test -bench=BenchmarkPHash_Large -cpuprofile=cpu.prof ./bench/...
 	go tool pprof -http=:8080 cpu.prof
 
 # Profile memory
-profile-mem:
+profile-mem: fixtures
 	go test -bench=BenchmarkPHash_Large -memprofile=mem.prof ./bench/...
 	go tool pprof -http=:8080 mem.prof
 
