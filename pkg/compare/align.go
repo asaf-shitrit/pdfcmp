@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
+	"unicode"
 
 	"github.com/asaf-shitrit/pdfcmp/pkg/content"
 	"github.com/asaf-shitrit/pdfcmp/pkg/render"
@@ -40,10 +42,13 @@ type fingerprint struct {
 
 // pageFingerprints fingerprints every page of doc and returns each page's
 // text, which alignment uses to line up pages inside a gap.
-func pageFingerprints(doc render.Document) ([]fingerprint, []string) {
+func pageFingerprints(ctx context.Context, doc render.Document) ([]fingerprint, []string, error) {
 	fps := make([]fingerprint, doc.PageCount())
 	texts := make([]string, len(fps))
 	for i := range fps {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		info, err := doc.PageInfo(i)
 		hash, herr := doc.ContentHash(i)
 		if err != nil || herr != nil {
@@ -57,7 +62,7 @@ func pageFingerprints(doc render.Document) ([]fingerprint, []string) {
 			fps[i] = fingerprint{objects: info.ObjectCount, content: hash, valid: true}
 		}
 	}
-	return fps, texts
+	return fps, texts, nil
 }
 
 func (f fingerprint) matches(g fingerprint) bool { return f.valid && f == g }
@@ -235,11 +240,16 @@ func (c *comparer) alignStage(ctx context.Context, result *Result, doc1, doc2 re
 	result.ComparisonLayers = append(result.ComparisonLayers, "align")
 	c.reportProgress("Aligning pages", 0, doc1.PageCount()+doc2.PageCount(), 0.2)
 
-	fp1, text1 := pageFingerprints(doc1)
-	fp2, text2 := pageFingerprints(doc2)
+	fp1, text1, err := pageFingerprints(ctx, doc1)
+	if err != nil {
+		return err
+	}
+	fp2, text2, err := pageFingerprints(ctx, doc2)
+	if err != nil {
+		return err
+	}
 	al := alignPages(fp1, fp2, func(i, j int) float64 {
-		s, _ := content.Similarity(text1[i], text2[j])
-		return s
+		return textLikeness(text1[i], text2[j])
 	})
 
 	// Every aligned pair goes through the usual per-page rules: planPages
@@ -260,6 +270,63 @@ func (c *comparer) alignStage(ctx context.Context, result *Result, doc1, doc2 re
 	result.DeletedPages = oneIndexed(al.deleted)
 	result.InsertedPages = oneIndexed(al.inserted)
 	return nil
+}
+
+// textLikeness scores how alike two pages' texts are in 0..1, for pairing the
+// pages of a gap. Long text is scored by shingled MinHash. Shingles are too
+// few on short pages for that to mean anything (content.Similarity reports
+// !ok), and a score of 0 for every pair would pair the gap by position, so
+// short pages fall back to the Jaccard similarity of their distinct words.
+// Words with digits are left out when both pages have other words: page
+// numbers and running totals change from page to page and would make unlike
+// pages look alike.
+func textLikeness(a, b string) float64 {
+	if s, ok := content.Similarity(a, b); ok {
+		return s
+	}
+	w1, w2 := content.Tokens(a), content.Tokens(b)
+	if p1, p2 := withoutDigits(w1), withoutDigits(w2); len(p1) > 0 && len(p2) > 0 {
+		w1, w2 = p1, p2
+	}
+	return wordJaccard(w1, w2)
+}
+
+// withoutDigits returns the words that hold no digit.
+func withoutDigits(words []string) []string {
+	var out []string
+	for _, w := range words {
+		if !strings.ContainsFunc(w, unicode.IsDigit) {
+			out = append(out, w)
+		}
+	}
+	return out
+}
+
+// wordJaccard is the Jaccard similarity of the distinct words of a and b; 0
+// when either has none.
+func wordJaccard(a, b []string) float64 {
+	set := make(map[string]bool, len(a))
+	for _, w := range a {
+		set[w] = true
+	}
+	union := len(set)
+	shared := 0
+	seen := make(map[string]bool, len(b))
+	for _, w := range b {
+		if seen[w] {
+			continue
+		}
+		seen[w] = true
+		if set[w] {
+			shared++
+		} else {
+			union++
+		}
+	}
+	if union == 0 {
+		return 0
+	}
+	return float64(shared) / float64(union)
 }
 
 // oneIndexed turns 0-indexed page numbers into 1-indexed ones.

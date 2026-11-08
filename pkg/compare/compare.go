@@ -189,6 +189,7 @@ func (c *comparer) byteStage(result *Result, pdf1, pdf2 string) (bool, error) {
 	}
 	if c.opts.Mode == ModeByte {
 		result.SimilarityScore = 0.0
+		result.byteOnly = true
 		return true, nil
 	}
 	return false, nil
@@ -282,11 +283,13 @@ func (c *comparer) pageCountStage(result *Result, doc1, doc2 render.Document) bo
 	switch {
 	case n1 == 0 && n2 == 0:
 		c.opts.Logger.Debug("Both PDFs have 0 pages, treating as identical")
-		result.setIdentical("empty documents")
+		result.setEmpty()
 		return true
 	case n1 == 0 || n2 == 0:
 		c.opts.Logger.Debug("One PDF has 0 pages", F("pages1", n1), F("pages2", n2))
 		result.setMismatch("empty document mismatch")
+		result.DeletedPages = pageRange(n1)
+		result.InsertedPages = pageRange(n2)
 		return true
 	}
 	return false
@@ -413,7 +416,10 @@ func (c *comparer) comparePairs(ctx context.Context, doc1, doc2 render.Document,
 		return nil, nil
 	}
 
-	plan := c.planPages(doc1, doc2, pairs)
+	plan, err := c.planPages(ctx, doc1, doc2, pairs)
+	if err != nil {
+		return nil, err
+	}
 	if len(plan.render) == 0 {
 		return plan.results, nil
 	}
@@ -424,7 +430,8 @@ func (c *comparer) comparePairs(ctx context.Context, doc1, doc2 render.Document,
 	for j, i := range plan.render {
 		nums1[j], nums2[j] = pairs[i].p1, pairs[i].p2
 	}
-	err := c.renderPairs(ctx, doc1, doc2, nums1, nums2, opts, func(j int, img1, img2 image.Image) {
+	workers := c.adjustWorkersForMemory(plan.infos, plan.render)
+	err = c.renderPairs(ctx, doc1, doc2, nums1, nums2, workers, opts, func(j int, img1, img2 image.Image) {
 		i := plan.render[j]
 		plan.results[i] = c.scorePage(pairs[i].p1, img1, img2, plan.infos[i], plan.textSims[i])
 	})
@@ -447,13 +454,17 @@ type pagePlan struct {
 // about 16x faster than rendering. A page that text decides is scored now;
 // every other page is scheduled for rendering, with its text similarity
 // scored now so that rendering workers never call back into the PDF engine.
-func (c *comparer) planPages(doc1, doc2 render.Document, pairs []pagePair) pagePlan {
+// It returns ctx's error once ctx is done.
+func (c *comparer) planPages(ctx context.Context, doc1, doc2 render.Document, pairs []pagePair) (pagePlan, error) {
 	plan := pagePlan{
 		results:  make([]PageResult, len(pairs)),
 		infos:    make([]pageInfoPair, len(pairs)),
 		textSims: make([]*float64, len(pairs)),
 	}
 	for i, pr := range pairs {
+		if err := ctx.Err(); err != nil {
+			return pagePlan{}, err
+		}
 		info1, err1 := doc1.PageInfo(pr.p1)
 		info2, err2 := doc2.PageInfo(pr.p2)
 		ok := err1 == nil && err2 == nil
@@ -474,7 +485,7 @@ func (c *comparer) planPages(doc1, doc2 render.Document, pairs []pagePair) pageP
 		plan.infos[i] = pageInfoPair{info1: info1, info2: info2, ok: ok}
 		plan.render = append(plan.render, i)
 	}
-	return plan
+	return plan, nil
 }
 
 // contentMatches reports whether the pair's two pages have the same content
@@ -496,7 +507,7 @@ func textDecides(info1, info2 render.PageInfo) bool {
 // renderPairs renders nums1 in the first document and nums2 in the second,
 // page j of one against page j of the other, and calls score with each
 // pair's two renders as soon as both are ready, from up to the
-// memory-adjusted worker count of goroutines at once. j is the pair's index.
+// given number of goroutines at once. j is the pair's index.
 // A page that fails to render in either document is not scored; the errors
 // are returned together once every page is done. When one document's stream
 // fails outright, the other stops rendering too.
@@ -505,8 +516,7 @@ func textDecides(info1, info2 render.PageInfo) bool {
 // same page arrives. The pairer holds at most workers+1 of them per
 // document, so a document that renders faster than the other waits for it
 // rather than holding all its pages in memory.
-func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, nums1, nums2 []int, opts render.Options, score func(j int, img1, img2 image.Image)) error {
-	workers := c.adjustWorkersForMemory(doc1)
+func (c *comparer) renderPairs(ctx context.Context, doc1, doc2 render.Document, nums1, nums2 []int, workers int, opts render.Options, score func(j int, img1, img2 image.Image)) error {
 	// Twice the workers lets rendering run ahead of scoring.
 	opts.Workers = workers
 	bufferSize := min(workers, len(nums1))
@@ -938,6 +948,29 @@ func (r *Result) setIdentical(strategy string) {
 	}
 }
 
+// setEmpty records two documents without pages. They match as documents, but
+// they are not byte-identical, so Identical stays as the byte stage left it.
+func (r *Result) setEmpty() {
+	r.SimilarityScore = 1.0
+	r.VisualComparison = VisualResult{
+		OverallScore:     1.0,
+		SamplingStrategy: "empty documents",
+	}
+}
+
+// pageRange lists the 1-indexed pages of a document of n pages, or nil when
+// n is 0.
+func pageRange(n int) []int {
+	if n <= 0 {
+		return nil
+	}
+	pages := make([]int, n)
+	for i := range pages {
+		pages[i] = i + 1
+	}
+	return pages
+}
+
 // setMismatch records documents found different without comparing pages.
 func (r *Result) setMismatch(strategy string) {
 	r.SimilarityScore = 0.0
@@ -998,36 +1031,27 @@ func (c *comparer) Close() error {
 // adjustWorkersForMemory reduces the worker count so that the renders held
 // at once fit in MaxMemoryMB. Per worker, renderPairs holds at most a page of
 // each document being rendered, one waiting in the pairer, one queued for
-// scoring and one being scored: 8 renders at the given DPI, sized like the
-// first page. It is an estimate: the PDF engine's own memory is on top.
-func (c *comparer) adjustWorkersForMemory(doc render.Document) int {
-	workers := c.opts.Workers
-	maxMemBytes := int64(c.opts.MaxMemoryMB) * 1024 * 1024
-
-	// Get page info to estimate memory per page
-	pageInfo, err := doc.PageInfo(0)
-	if err != nil {
-		// Can't estimate, use configured workers
-		return workers
-	}
-
-	// Estimate memory per page (4 bytes per pixel for RGBA)
-	memPerPage := render.EstimateMemoryUsage(pageInfo.WidthPts, pageInfo.HeightPts, c.opts.DPI)
-
-	memPerWorker := memPerPage * 8
-
-	// Calculate max workers based on memory
-	if memPerWorker > 0 {
-		maxWorkers := int(maxMemBytes / memPerWorker)
-		if maxWorkers < 1 {
-			maxWorkers = 1 // Always allow at least 1 worker
+// scoring and one being scored: 8 renders at the given DPI, each sized like
+// the largest page of either document among the pages to render (infos
+// indexed like planPages' plan, toRender the indexes to render). Pages whose
+// info could not be read are skipped; with no size known at all it allows
+// one worker. It is an estimate: the PDF engine's own memory is on top.
+func (c *comparer) adjustWorkersForMemory(infos []pageInfoPair, toRender []int) int {
+	var largest int64
+	for _, i := range toRender {
+		if !infos[i].ok {
+			continue
 		}
-		if workers > maxWorkers {
-			workers = maxWorkers
+		for _, pi := range [2]render.PageInfo{infos[i].info1, infos[i].info2} {
+			largest = max(largest, render.EstimateMemoryUsage(pi.WidthPts, pi.HeightPts, c.opts.DPI))
 		}
 	}
+	if largest <= 0 {
+		return 1 // Can't estimate, so be conservative
+	}
 
-	return workers
+	maxWorkers := int(int64(c.opts.MaxMemoryMB) * 1024 * 1024 / (largest * 8))
+	return max(1, min(c.opts.Workers, maxWorkers))
 }
 
 // strategicSample returns the pages to sample from a document: every page
