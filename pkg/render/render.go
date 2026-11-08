@@ -59,7 +59,9 @@ type Document interface {
 
 	// ContentHash hashes a page's graphical content (object types, bounds,
 	// colours and image data), so that redrawn graphics beside unchanged
-	// text are told apart without rendering
+	// text are told apart without rendering. It returns ErrNotHashable for
+	// a page whose look it cannot capture (layers, shadings, some images,
+	// very large paths); callers must then render the page.
 	ContentHash(pageNum int) (uint64, error)
 
 	// RenderPage renders a page to an image
