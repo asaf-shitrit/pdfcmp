@@ -54,18 +54,22 @@ func pageFingerprints(ctx context.Context, doc render.Document) ([]fingerprint, 
 			continue
 		}
 		texts[i] = info.Text
+		if info.TextHash != 0 {
+			// A page with text is identified by its text alone, so a page
+			// whose content cannot be hashed still anchors.
+			fps[i] = fingerprint{text: info.TextHash, valid: true}
+			continue
+		}
+		if info.ObjectCount == 0 {
+			continue
+		}
 		hash, herr := doc.ContentHash(i)
 		if herr != nil {
 			// Not hashable (or failed): the page has no fingerprint, so it is
-			// never an exact match, but alignment still reads its text.
+			// never an exact match.
 			continue
 		}
-		switch {
-		case info.TextHash != 0:
-			fps[i] = fingerprint{text: info.TextHash, valid: true}
-		case info.ObjectCount > 0:
-			fps[i] = fingerprint{objects: info.ObjectCount, content: hash, valid: true}
-		}
+		fps[i] = fingerprint{objects: info.ObjectCount, content: hash, valid: true}
 	}
 	return fps, texts, nil
 }
