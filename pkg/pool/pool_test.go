@@ -157,3 +157,41 @@ func TestHelpers(t *testing.T) {
 		}
 	})
 }
+
+// TestPool_Process_DuplicateIDs guards against results being keyed by Job.ID.
+// Callers of the exported Process may reuse IDs, and each job must still get
+// its own result, in input order, with its error intact.
+func TestPool_Process_DuplicateIDs(t *testing.T) {
+	errBoom := errors.New("boom")
+	p := New(4, func(ctx context.Context, in int) (int, error) {
+		if in == 1 {
+			return 0, errBoom
+		}
+		return in * 10, nil
+	})
+
+	jobs := []Job[int, int]{
+		{ID: 0, Input: 1},
+		{ID: 0, Input: 2},
+		{ID: 7, Input: 3},
+	}
+
+	results, err := p.Process(context.Background(), jobs)
+	if err != nil {
+		t.Fatalf("Process() error = %v", err)
+	}
+	if len(results) != len(jobs) {
+		t.Fatalf("got %d results, want %d", len(results), len(jobs))
+	}
+
+	want := []Result[int]{
+		{ID: 0, Value: 0, Err: errBoom},
+		{ID: 0, Value: 20},
+		{ID: 7, Value: 30},
+	}
+	for i, w := range want {
+		if results[i] != w {
+			t.Errorf("results[%d] = %+v, want %+v", i, results[i], w)
+		}
+	}
+}
