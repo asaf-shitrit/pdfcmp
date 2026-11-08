@@ -76,6 +76,50 @@ func TestInkDiff(t *testing.T) {
 	}
 }
 
+func TestInkDiffColour(t *testing.T) {
+	red, blue := color.RGBA{255, 0, 0, 255}, color.RGBA{0, 0, 255, 255}
+	band := func(square bool) *image.RGBA {
+		img := inkPage(red, red, 0)
+		if square { // 4 mm at 150 DPI
+			fill(img, 300, 40, 24, 24, blue)
+		}
+		return img
+	}
+	for _, tc := range []struct {
+		name    string
+		a, b    image.Image
+		changed bool
+	}{
+		{"red line to blue", inkPage(paper, red, 0), inkPage(paper, blue, 0), true},
+		{"blue square on a red band", band(false), band(true), true},
+		{"red line unchanged", inkPage(paper, red, 0), inkPage(paper, red, 0), false},
+	} {
+		n, _, ok := InkDiff(tc.a, tc.b)
+		if !ok || (n > InkTolerance) != tc.changed {
+			t.Errorf("%s: ok = %v, %d changed pixels, want changed = %v", tc.name, ok, n, tc.changed)
+		}
+	}
+}
+
+func TestInkDiffOnePixelSizeMismatch(t *testing.T) {
+	crop := func(img *image.RGBA, w, h int) image.Image { return img.SubImage(image.Rect(0, 0, w, h)) }
+	mark := func(img *image.RGBA) *image.RGBA {
+		fill(img, 300, 40, 12, 12, black)
+		return img
+	}
+	same, _, ok := InkDiff(crop(inkPage(paper, black, 0), 639, 900), crop(inkPage(paper, black, 0), 640, 899))
+	if !ok || same > InkTolerance {
+		t.Errorf("same content 1 px apart: ok = %v, %d changed pixels, want none", ok, same)
+	}
+	n, _, ok := InkDiff(crop(inkPage(paper, black, 0), 639, 900), crop(mark(inkPage(paper, black, 0)), 640, 899))
+	if !ok || n <= InkTolerance {
+		t.Errorf("real mark 1 px apart: ok = %v, %d changed pixels, want a change", ok, n)
+	}
+	if _, _, ok := InkDiff(crop(inkPage(paper, black, 0), 637, 900), inkPage(paper, black, 0)); ok {
+		t.Error("pages 3 px apart: want no result")
+	}
+}
+
 func BenchmarkInkDiff(b *testing.B) {
 	p1, p2 := inkPage(paper, black, 0), inkPage(paper, black, 1)
 	for b.Loop() {
