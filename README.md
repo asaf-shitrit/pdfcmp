@@ -53,7 +53,7 @@ pdfcmp compare file1.pdf file2.pdf
 - `--no-tiles`: Judge pages by their perceptual hashes and text alone, without the worst-tile check. In Go: `compare.WithTiles(false)`.
 - `--text-tolerant`: Let the threshold decide when a page's text changed, instead of calling the files different. In Go: `compare.WithTextChange(compare.TextChangeScored)`.
 - `--text-hash off`: Compare page text by exact hash only, as v0.1.0 did.
-- `--format json`: Get detailed results in JSON format.
+- `--format json`: Get detailed results in JSON format. `status` (`IDENTICAL`, `SIMILAR`, `DIFFERENT`) and `similar` give the verdict the exit code follows; `threshold`, `text_change_mode` (`fails` or `scored`) and `tiles` give the settings it was made with.
 - `--timeout 2m`: Give up, with exit code `2`, if the comparison takes longer.
 - `--memory 512`: Memory budget in MB for page renders (default 512). Fewer pages render at once to stay within it; the PDF engine's own memory comes on top.
 - `-v`: Show progress and stage information.
