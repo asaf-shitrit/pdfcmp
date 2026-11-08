@@ -248,8 +248,9 @@ func (c *comparer) alignStage(ctx context.Context, result *Result, doc1, doc2 re
 	if err != nil {
 		return err
 	}
+	pt1, pt2 := newPageTexts(text1), newPageTexts(text2)
 	al := alignPages(fp1, fp2, func(i, j int) float64 {
-		return textLikeness(text1[i], text2[j])
+		return textLikeness(pt1.at(i), pt2.at(j))
 	})
 
 	// Every aligned pair goes through the usual per-page rules: planPages
@@ -272,6 +273,36 @@ func (c *comparer) alignStage(ctx context.Context, result *Result, doc1, doc2 re
 	return nil
 }
 
+// pageText is a page's text prepared once for textLikeness, which gap pairing
+// calls for every pair of pages.
+type pageText struct {
+	words    []string          // all words
+	noDigits []string          // the words that hold no digit
+	sig      content.Signature // for long text
+}
+
+func newPageText(text string) *pageText {
+	words := content.Tokens(text)
+	return &pageText{words: words, noDigits: withoutDigits(words), sig: content.NewSignature(words)}
+}
+
+// pageTexts prepares pages on first use: pages that anchor are never scored.
+type pageTexts struct {
+	texts []string
+	cache []*pageText
+}
+
+func newPageTexts(texts []string) *pageTexts {
+	return &pageTexts{texts: texts, cache: make([]*pageText, len(texts))}
+}
+
+func (p *pageTexts) at(i int) *pageText {
+	if p.cache[i] == nil {
+		p.cache[i] = newPageText(p.texts[i])
+	}
+	return p.cache[i]
+}
+
 // textLikeness scores how alike two pages' texts are in 0..1, for pairing the
 // pages of a gap. Long text is scored by shingled MinHash. Shingles are too
 // few on short pages for that to mean anything (content.Similarity reports
@@ -280,15 +311,14 @@ func (c *comparer) alignStage(ctx context.Context, result *Result, doc1, doc2 re
 // Words with digits are left out when both pages have other words: page
 // numbers and running totals change from page to page and would make unlike
 // pages look alike.
-func textLikeness(a, b string) float64 {
-	if s, ok := content.Similarity(a, b); ok {
+func textLikeness(a, b *pageText) float64 {
+	if s, ok := a.sig.Similarity(&b.sig); ok {
 		return s
 	}
-	w1, w2 := content.Tokens(a), content.Tokens(b)
-	if p1, p2 := withoutDigits(w1), withoutDigits(w2); len(p1) > 0 && len(p2) > 0 {
-		w1, w2 = p1, p2
+	if len(a.noDigits) > 0 && len(b.noDigits) > 0 {
+		return wordJaccard(a.noDigits, b.noDigits)
 	}
-	return wordJaccard(w1, w2)
+	return wordJaccard(a.words, b.words)
 }
 
 // withoutDigits returns the words that hold no digit.

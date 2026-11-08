@@ -68,13 +68,9 @@ const MinShingles = 60
 // shingles. When only one does, a low estimate is real: most of the longer
 // text is gone.
 func Similarity(text1, text2 string) (s float64, ok bool) {
-	s1 := Shingles(text1, DefaultShingleSize)
-	s2 := Shingles(text2, DefaultShingleSize)
-	if distinct(s1) < MinShingles && distinct(s2) < MinShingles {
-		return 0, false
-	}
-	m1, m2 := NewMinHash(s1), NewMinHash(s2)
-	return m1.Similarity(&m2), true
+	s1 := NewSignature(Tokens(text1))
+	s2 := NewSignature(Tokens(text2))
+	return s1.Similarity(&s2)
 }
 
 func distinct(shingles []uint64) int {
@@ -83,4 +79,25 @@ func distinct(shingles []uint64) int {
 		seen[s] = struct{}{}
 	}
 	return len(seen)
+}
+
+// Signature is what Similarity needs of one text, computed once so a page
+// compared against many others is shingled and hashed once.
+type Signature struct {
+	distinct int
+	minHash  MinHash
+}
+
+// NewSignature returns the Signature of text already split by Tokens.
+func NewSignature(tokens []string) Signature {
+	shingles := ShinglesOf(tokens, DefaultShingleSize)
+	return Signature{distinct: distinct(shingles), minHash: NewMinHash(shingles)}
+}
+
+// Similarity is Similarity for two signatures.
+func (s *Signature) Similarity(o *Signature) (float64, bool) {
+	if s.distinct < MinShingles && o.distinct < MinShingles {
+		return 0, false
+	}
+	return s.minHash.Similarity(&o.minHash), true
 }
