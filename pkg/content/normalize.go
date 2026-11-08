@@ -1,7 +1,6 @@
 package content
 
 import (
-	"maps"
 	"slices"
 	"strings"
 	"unicode"
@@ -67,52 +66,63 @@ func counted(r rune) bool {
 // Swapped reports whether two texts differ by exchanging marks that Bag
 // leaves out but that change what a page says: the comma, period, colon,
 // slash or hyphen between two digits ("1,500" for "1.500") and a Latin-1 or
-// Latin Extended letter ("Möller" for "Müller"). It holds when a class of
-// marks has the same count in both texts and a different make-up, which an
-// edit that replaces a mark does and a re-save does not. A re-save moves
-// spaces and maps glyphs to other letters, so those marks come and go and
-// their count changes.
+// Latin Extended letter inside a word ("Möller" for "Müller").
+//
+// It compares the texts position by position with whitespace removed, so a
+// space an extractor moved ("2035. 3" for "2035.3") cannot show as a
+// difference. It holds when the stripped texts have the same length, differ
+// somewhere, and every difference is one of those marks on both sides: a
+// separator between digits, or a letter touching an ASCII letter. Any other
+// difference, a glyph remapped on its own or text added, removed or
+// reordered, is not an exchange and stays with the render.
 func Swapped(a, b string) bool {
-	ma, mb := marks(a), marks(b)
-	for class := range ma {
-		if sameTotal(ma[class], mb[class]) && !maps.Equal(ma[class], mb[class]) {
-			return true
-		}
+	ra, rb := strip(a), strip(b)
+	if len(ra) != len(rb) {
+		return false
 	}
-	return false
+	found := false
+	for i := range ra {
+		x, y := ra[i], rb[i]
+		if x.r == y.r {
+			continue
+		}
+		if !(separatorAt(ra, i) && separatorAt(rb, i)) && !(x.inWord() && y.inWord()) {
+			return false
+		}
+		found = true
+	}
+	return found
 }
 
-const (
-	classSeparator = iota
-	classLetter
-)
+// glyph is a rune of whitespace-stripped text, with whether an ASCII letter
+// touched it before the whitespace was removed.
+type glyph struct {
+	r      rune
+	nextTo bool
+}
 
-// marks counts, per class, the separators between two digits and the Latin
-// letters in U+0080-U+02FF other than the "ï" Ghostscript maps a bullet to.
-func marks(text string) [2]map[rune]int {
-	out := [2]map[rune]int{{}, {}}
+func (g glyph) inWord() bool {
+	return g.nextTo && g.r > 0x7F && g.r <= 0x2FF && g.r != 'ï' && unicode.IsLetter(g.r)
+}
+
+func strip(text string) []glyph {
+	var out []glyph
 	rs := []rune(text)
 	for i, r := range rs {
-		switch {
-		case r > 0x7F && r <= 0x2FF && r != 'ï' && unicode.IsLetter(r):
-			out[classLetter][r]++
-		case i > 0 && i < len(rs)-1 && strings.ContainsRune(",.:/-", r) &&
-			isDigit(rs[i-1]) && isDigit(rs[i+1]):
-			out[classSeparator][r]++
+		if unicode.IsSpace(r) {
+			continue
 		}
+		out = append(out, glyph{r, i > 0 && isASCIILetter(rs[i-1]) || i < len(rs)-1 && isASCIILetter(rs[i+1])})
 	}
 	return out
 }
 
+// separatorAt reports whether gs[i] is a separator between two digits.
+func separatorAt(gs []glyph, i int) bool {
+	return i > 0 && i < len(gs)-1 && strings.ContainsRune(",.:/-", gs[i].r) &&
+		isDigit(gs[i-1].r) && isDigit(gs[i+1].r)
+}
+
 func isDigit(r rune) bool { return r >= '0' && r <= '9' }
 
-func sameTotal(a, b map[rune]int) bool {
-	var x, y int
-	for _, n := range a {
-		x += n
-	}
-	for _, n := range b {
-		y += n
-	}
-	return x == y
-}
+func isASCIILetter(r rune) bool { return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' }
