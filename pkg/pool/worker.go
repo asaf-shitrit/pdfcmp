@@ -53,76 +53,69 @@ func (p *Pool[T, R]) Process(ctx context.Context, jobs []Job[T, R]) ([]Result[R]
 		numWorkers = len(jobs)
 	}
 
-	jobCh := make(chan Job[T, R], len(jobs))
-	resultCh := make(chan Result[R], len(jobs))
+	jobCh := make(chan indexedJob[T, R], len(jobs))
+	results := make([]Result[R], len(jobs))
 
-	// Start workers
+	// Start workers. Each worker writes only the slots of the jobs it received,
+	// and every slot belongs to exactly one job, so no locking is needed.
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			p.worker(ctx, jobCh, resultCh)
+			p.worker(ctx, jobCh, results)
 		}()
 	}
 
-	// Send jobs
+	// Send jobs, tagged with their slice position so results never depend on
+	// the caller-supplied Job.ID being unique.
 	go func() {
 		defer close(jobCh)
-		for _, job := range jobs {
+		for pos, job := range jobs {
 			select {
 			case <-ctx.Done():
 				return // Exit goroutine immediately on cancellation
-			case jobCh <- job:
+			case jobCh <- indexedJob[T, R]{pos: pos, job: job}:
 			}
 		}
 	}()
 
-	// Wait for workers to complete
-	go func() {
-		wg.Wait()
-		close(resultCh)
-	}()
-
-	// Collect results
-	results := make([]Result[R], len(jobs))
-	resultMap := make(map[int]Result[R])
-
-	for result := range resultCh {
-		resultMap[result.ID] = result
-	}
+	// Wait for workers to finish before reading results.
+	wg.Wait()
 
 	// Check for context cancellation
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
 
-	// Order results by job ID
-	for i := range jobs {
-		if r, ok := resultMap[jobs[i].ID]; ok {
-			results[i] = r
-		}
-	}
-
 	return results, nil
 }
 
-// worker processes jobs from the job channel and sends results to the result channel
-func (p *Pool[T, R]) worker(ctx context.Context, jobs <-chan Job[T, R], results chan<- Result[R]) {
-	for job := range jobs {
+// indexedJob pairs a job with its position in the input slice. The position,
+// not Job.ID, decides where the result is stored, because callers of the
+// exported Process may reuse IDs and IDs would then collide.
+type indexedJob[T any, R any] struct {
+	pos int
+	job Job[T, R]
+}
+
+// worker processes jobs from the job channel and stores each result at the
+// job's input position. Job.ID is copied into the Result unchanged.
+func (p *Pool[T, R]) worker(ctx context.Context, jobs <-chan indexedJob[T, R], results []Result[R]) {
+	for ij := range jobs {
 		select {
 		case <-ctx.Done():
-			results <- Result[R]{
-				ID:  job.ID,
+			results[ij.pos] = Result[R]{
+				ID:  ij.job.ID,
 				Err: ctx.Err(),
 			}
 			return
 		default:
 		}
 
-		value, err := p.fn(ctx, job.Input)
-		results <- Result[R]{
-			ID:    job.ID,
+		value, err := p.fn(ctx, ij.job.Input)
+		results[ij.pos] = Result[R]{
+			ID:    ij.job.ID,
 			Value: value,
 			Err:   err,
 		}
