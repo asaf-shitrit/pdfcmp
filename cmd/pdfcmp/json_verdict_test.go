@@ -1,35 +1,30 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
-	"io"
-	"os"
 	"path/filepath"
 	"testing"
 )
 
-// runJSON runs the command line and returns its exit code and the JSON it
-// wrote to standard output.
+// runJSON runs the command line as run does, with the command's output sent
+// to a buffer, and returns the exit code and the JSON written. It leaves
+// os.Stdout alone: PDFium instances bind to it when they are created.
 func runJSON(t *testing.T, args []string) (int, map[string]any) {
 	t.Helper()
-	old := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	os.Stdout = w
-	code := run(args)
-	os.Stdout = old
-	_ = w.Close()
-	out, err := io.ReadAll(r)
-	if err != nil {
-		t.Fatal(err)
+	exitCode = exitSame
+	cmd := newRootCmd()
+	var out bytes.Buffer
+	cmd.SetOut(&out)
+	cmd.SetArgs(args)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("pdfcmp %v: %v", args, err)
 	}
 	var got map[string]any
-	if err := json.Unmarshal(out, &got); err != nil {
-		t.Fatalf("pdfcmp %v: output is not JSON: %v\n%s", args, err, out)
+	if err := json.Unmarshal(out.Bytes(), &got); err != nil {
+		t.Fatalf("pdfcmp %v: output is not JSON: %v\n%s", args, err, out.String())
 	}
-	return code, got
+	return exitCode, got
 }
 
 // The JSON carries the verdict the exit code follows, for every flag that
