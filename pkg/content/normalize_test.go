@@ -102,6 +102,9 @@ func TestSwapped(t *testing.T) {
 		{"isolated glyph remap", "Þ item", "ß item", false},
 		{"swap with a moved space", "due 1,500 USD", "due 1. 500 USD", true},
 		{"swap beside a moved space", "Amount due: 1,500 USD", "Amount due:1.500 USD", true},
+		{"swap beside a bullet remap", "• Total 1,500 EUR", "¥ Total 1.500 EUR", true},
+		{"swap beside an i diaeresis remap", "• Total 1,500 EUR", "ï Total 1.500 EUR", true},
+		{"swap beside a counted change", "• Total 1,500 EUR", "¥ Total 1.600 EUR", false},
 		{"different length", "Müller", "Möller x", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

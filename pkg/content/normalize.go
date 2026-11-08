@@ -71,10 +71,13 @@ func counted(r rune) bool {
 // It compares the texts position by position with whitespace removed, so a
 // space an extractor moved ("2035. 3" for "2035.3") cannot show as a
 // difference. It holds when the stripped texts have the same length, differ
-// somewhere, and every difference is one of those marks on both sides: a
-// separator between digits, or a letter touching an ASCII letter. Any other
-// difference, a glyph remapped on its own or text added, removed or
-// reordered, is not an exchange and stays with the render.
+// somewhere, and at least one difference is one of those marks on both sides:
+// a separator between digits, or a letter touching an ASCII letter. Other
+// differences are tolerated only between characters Bag does not count, such
+// as a bullet remapped to "ï" or "¥", which is re-save noise and must not
+// hide an exchange elsewhere. A difference in a letter or digit Bag counts, or
+// a glyph remapped with no exchange beside it, is not an exchange and stays
+// with the render.
 func Swapped(a, b string) bool {
 	ra, rb := strip(a), strip(b)
 	if len(ra) != len(rb) {
@@ -86,10 +89,11 @@ func Swapped(a, b string) bool {
 		if x.r == y.r {
 			continue
 		}
-		if !(separatorAt(ra, i) && separatorAt(rb, i)) && !(x.inWord() && y.inWord()) {
+		if separatorAt(ra, i) && separatorAt(rb, i) || x.inWord() && y.inWord() {
+			found = true
+		} else if counted(x.r) || counted(y.r) {
 			return false
 		}
-		found = true
 	}
 	return found
 }

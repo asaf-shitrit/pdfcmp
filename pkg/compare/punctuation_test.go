@@ -55,3 +55,23 @@ func TestPunctuationAndAccentChanges(t *testing.T) {
 		})
 	}
 }
+
+// A glyph remapped by a re-save (bullet to yen) beside a real separator swap
+// must not hide the swap, with the tile pass off so only the text rule judges.
+func TestSwapBesideGlyphRemapNoTiles(t *testing.T) {
+	cmp, err := New(WithTiles(false))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a.pdf"), filepath.Join(dir, "b.pdf")
+	writeLine(t, a, "\u00b7 Total amount due 1,500 EUR")
+	writeLine(t, b, "\u00a5 Total amount due 1.500 EUR")
+	res, err := cmp.Compare(context.Background(), a, b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.IsSimilar(0.95) {
+		t.Errorf("similar, want different (score %v, text_changed %v)", res.SimilarityScore, res.TextChanged)
+	}
+}
