@@ -16,23 +16,48 @@ type Result struct {
 	SizesMatch bool
 }
 
+// openRegular opens path for reading and returns it with its size. It rejects
+// anything but a regular file: the size of a pipe, device or FIFO says nothing
+// about how much it holds (a pipe reports the bytes buffered so far, /dev/zero
+// reports 0 and never ends), so a size shortcut or a read-to-EOF on one gives a
+// wrong answer or never returns.
+func openRegular(path string) (*os.File, int64, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, 0, fmt.Errorf("cannot open %s: %w", path, err)
+	}
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return nil, 0, fmt.Errorf("cannot stat %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = f.Close()
+		return nil, 0, fmt.Errorf("%s is not a regular file", path)
+	}
+	return f, info.Size(), nil
+}
+
 // Compare performs byte-wise comparison of two files.
-// It first checks file sizes (fast early exit), then computes xxHash64.
+// Both files are opened first, so an unreadable file is an error whatever the
+// sizes are. Only regular files are accepted; pipes, devices and FIFOs return
+// an error. Then sizes are checked (fast early exit) and xxHash64 computed.
 func Compare(path1, path2 string) (Result, error) {
-	// Get file info for both files
-	stat1, err := os.Stat(path1)
+	f1, size1, err := openRegular(path1)
 	if err != nil {
-		return Result{}, fmt.Errorf("cannot stat %s: %w", path1, err)
+		return Result{}, err
 	}
-	stat2, err := os.Stat(path2)
+	defer func() { _ = f1.Close() }()
+	f2, size2, err := openRegular(path2)
 	if err != nil {
-		return Result{}, fmt.Errorf("cannot stat %s: %w", path2, err)
+		return Result{}, err
 	}
+	defer func() { _ = f2.Close() }()
 
 	result := Result{
-		Size1:      stat1.Size(),
-		Size2:      stat2.Size(),
-		SizesMatch: stat1.Size() == stat2.Size(),
+		Size1:      size1,
+		Size2:      size2,
+		SizesMatch: size1 == size2,
 	}
 
 	// Fast path: if sizes differ, files are definitely different

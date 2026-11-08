@@ -368,5 +368,16 @@ func validateFile(path string) error {
 	if info.IsDir() {
 		return fmt.Errorf("expected a file but got a directory: %s", path)
 	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file (pipe, device or socket): %s", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsPermission(err) {
+			return fmt.Errorf("permission denied: cannot read %s", path)
+		}
+		return fmt.Errorf("cannot read file %s: %w", path, err)
+	}
+	_ = f.Close()
 	return nil
 }

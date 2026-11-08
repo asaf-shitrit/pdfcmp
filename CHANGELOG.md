@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Input files that are not regular files, or cannot be read, now exit with `2` instead of a wrong verdict or a hang. A pipe's size is the bytes buffered so far, so `pdfcmp quick <(cat a.pdf) a.pdf` reported DIFFERENT for identical content over the pipe buffer, and `pdfcmp quick /dev/zero /dev/zero` never ended. An unreadable file exited `1` when its size differed from the other file's and `2` when it matched. The command line rejects pipes, devices and sockets and opens every file before comparing; `bytewise.Compare` opens both files first and returns an error for anything but a regular file.
+
 ## [0.4.0] - 2026-11-08
 
 ### Fixed
