@@ -248,6 +248,11 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	}
 
 	result, err := compareFiles(ctx, args[0], args[1])
+	if err == nil {
+		// A deadline that passed during the run is an error even when the
+		// comparison finished, so the outcome does not depend on timing.
+		err = ctx.Err()
+	}
 	if err != nil {
 		return err
 	}

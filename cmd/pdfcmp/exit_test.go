@@ -48,6 +48,20 @@ func TestExitCodes(t *testing.T) {
 	}
 }
 
+// TestTimeoutTextIdentical checks that an expired --timeout exits 2 for
+// documents whose text decides every page, which never render. Run it with
+// -count to check that the outcome does not depend on timing.
+func TestTimeoutTextIdentical(t *testing.T) {
+	withFlags(t, nil)
+	dir := t.TempDir()
+	a := fixture(t, dir, "large_a.pdf")
+	b := fixture(t, dir, "large_b.pdf")
+	args := []string{"compare", "-q", "--timeout", "1ns", a, b}
+	if got := run(args); got != exitError {
+		t.Errorf("pdfcmp %v: exit %d, want %d", args, got, exitError)
+	}
+}
+
 func TestVersionString(t *testing.T) {
 	saved := version
 	t.Cleanup(func() { version = saved })

@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `--timeout` and Ctrl-C now stop a comparison while it reads page info, not only while it renders. For long documents whose text decides every page the timeout did not bound the run time, and an expired deadline exited `0` or `2` at random. An expired deadline now always exits `2`.
+
 ## [0.4.0] - 2026-11-08
 
 ### Fixed

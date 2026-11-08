@@ -413,7 +413,10 @@ func (c *comparer) comparePairs(ctx context.Context, doc1, doc2 render.Document,
 		return nil, nil
 	}
 
-	plan := c.planPages(doc1, doc2, pairs)
+	plan, err := c.planPages(ctx, doc1, doc2, pairs)
+	if err != nil {
+		return nil, err
+	}
 	if len(plan.render) == 0 {
 		return plan.results, nil
 	}
@@ -424,7 +427,7 @@ func (c *comparer) comparePairs(ctx context.Context, doc1, doc2 render.Document,
 	for j, i := range plan.render {
 		nums1[j], nums2[j] = pairs[i].p1, pairs[i].p2
 	}
-	err := c.renderPairs(ctx, doc1, doc2, nums1, nums2, opts, func(j int, img1, img2 image.Image) {
+	err = c.renderPairs(ctx, doc1, doc2, nums1, nums2, opts, func(j int, img1, img2 image.Image) {
 		i := plan.render[j]
 		plan.results[i] = c.scorePage(pairs[i].p1, img1, img2, plan.infos[i], plan.textSims[i])
 	})
@@ -447,13 +450,17 @@ type pagePlan struct {
 // about 16x faster than rendering. A page that text decides is scored now;
 // every other page is scheduled for rendering, with its text similarity
 // scored now so that rendering workers never call back into the PDF engine.
-func (c *comparer) planPages(doc1, doc2 render.Document, pairs []pagePair) pagePlan {
+// It returns ctx's error once ctx is done.
+func (c *comparer) planPages(ctx context.Context, doc1, doc2 render.Document, pairs []pagePair) (pagePlan, error) {
 	plan := pagePlan{
 		results:  make([]PageResult, len(pairs)),
 		infos:    make([]pageInfoPair, len(pairs)),
 		textSims: make([]*float64, len(pairs)),
 	}
 	for i, pr := range pairs {
+		if err := ctx.Err(); err != nil {
+			return pagePlan{}, err
+		}
 		info1, err1 := doc1.PageInfo(pr.p1)
 		info2, err2 := doc2.PageInfo(pr.p2)
 		ok := err1 == nil && err2 == nil
@@ -469,7 +476,7 @@ func (c *comparer) planPages(doc1, doc2 render.Document, pairs []pagePair) pageP
 		plan.infos[i] = pageInfoPair{info1: info1, info2: info2, ok: ok}
 		plan.render = append(plan.render, i)
 	}
-	return plan
+	return plan, nil
 }
 
 // contentMatches reports whether the pair's two pages have the same content
