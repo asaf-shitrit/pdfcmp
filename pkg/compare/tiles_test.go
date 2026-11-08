@@ -111,10 +111,10 @@ func TestUseTiles(t *testing.T) {
 func scanPDF(t *testing.T, path string, quality, stampAt, swapAt int) {
 	t.Helper()
 	err := fixtures.Scans(path, 3, quality, func(p int) image.Image {
-		switch {
-		case p == swapAt:
+		switch p {
+		case swapAt:
 			return fixtures.ScanImage(1000)
-		case p == stampAt:
+		case stampAt:
 			return fixtures.StampImage(fixtures.ScanImage(int64(p)), 600, 900, 120, 60)
 		}
 		return fixtures.ScanImage(int64(p))
@@ -130,10 +130,10 @@ func rescanPDF(t *testing.T, path string, page func(seed int64) image.Image, lev
 	t.Helper()
 	err := fixtures.Scans(path, 3, 92, func(p int) image.Image {
 		img := page(int64(p))
-		switch {
-		case p == swapAt:
+		switch p {
+		case swapAt:
 			img = page(1000)
-		case p == stampAt:
+		case stampAt:
 			img = fixtures.StampImage(img, 600, 900, 120, 60)
 		}
 		return fixtures.Rescan(img, int64(p)+40, level)

@@ -21,7 +21,6 @@ import (
 	"go/parser"
 	"go/token"
 	"io/fs"
-	"math"
 	"os"
 	"path/filepath"
 	"sort"
@@ -269,7 +268,8 @@ func coverage(blocks []block, start, end int) float64 {
 
 func crapScore(comp int, cov float64) float64 {
 	c := float64(comp)
-	return c*c*math.Pow(1-cov, 3) + c
+	u := 1 - cov
+	return c*c*u*u*u + c
 }
 
 func report(rows []result, threshold float64, top int) int {
