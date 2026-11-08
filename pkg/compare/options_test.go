@@ -85,8 +85,19 @@ func TestOptionsValidate(t *testing.T) {
 				Workers:             4,
 				SimilarityThreshold: 0.9,
 				MaxMemoryMB:         256,
+				Logger:              NopLogger{},
 			},
 			wantErr: false,
+		},
+		{
+			name: "NilLogger",
+			opts: Options{
+				DPI:                 150,
+				Workers:             4,
+				SimilarityThreshold: 0.9,
+				MaxMemoryMB:         256,
+			},
+			wantErr: true,
 		},
 		{
 			name: "DPITooLow",
