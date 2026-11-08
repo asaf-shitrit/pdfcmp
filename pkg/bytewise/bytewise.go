@@ -22,6 +22,11 @@ type Result struct {
 // reports 0 and never ends), so a size shortcut or a read-to-EOF on one gives a
 // wrong answer or never returns.
 func openRegular(path string) (*os.File, int64, error) {
+	// Stat before opening: opening a FIFO for reading blocks until a writer
+	// appears. The handle is checked again below.
+	if pre, err := os.Stat(path); err == nil && !pre.Mode().IsRegular() {
+		return nil, 0, fmt.Errorf("%s is not a regular file", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return nil, 0, fmt.Errorf("cannot open %s: %w", path, err)
