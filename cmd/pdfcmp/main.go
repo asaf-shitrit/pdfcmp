@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"runtime"
 	"runtime/debug"
 	"syscall"
 	"time"
@@ -120,7 +119,7 @@ differ, and 2 if they could not be compared.`,
 
 	compareCmd.Flags().StringVarP(&mode, "mode", "m", "auto", "Comparison mode: auto, byte, visual, full")
 	compareCmd.Flags().IntVar(&dpi, "dpi", 150, "Rendering DPI for visual comparison")
-	compareCmd.Flags().IntVarP(&workers, "workers", "w", runtime.NumCPU(), "Number of worker goroutines")
+	compareCmd.Flags().IntVarP(&workers, "workers", "w", compare.DefaultWorkers(), "Number of worker goroutines")
 	compareCmd.Flags().Float64VarP(&threshold, "threshold", "t", 0.95, "Similarity threshold (0.0 to 1.0)")
 	compareCmd.Flags().StringVar(&hashType, "hash", "both", "Hash type: dhash, phash, both")
 	compareCmd.Flags().StringVar(&textHash, "text-hash", "minhash", "Text similarity for pages whose text differs: minhash, off")
@@ -248,6 +247,11 @@ func runCompare(cmd *cobra.Command, args []string) error {
 	}
 
 	result, err := compareFiles(ctx, args[0], args[1])
+	if err == nil {
+		// A deadline that passed during the run is an error even when the
+		// comparison finished, so the outcome does not depend on timing.
+		err = ctx.Err()
+	}
 	if err != nil {
 		return err
 	}
@@ -368,5 +372,16 @@ func validateFile(path string) error {
 	if info.IsDir() {
 		return fmt.Errorf("expected a file but got a directory: %s", path)
 	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file (pipe, device or socket): %s", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsPermission(err) {
+			return fmt.Errorf("permission denied: cannot read %s", path)
+		}
+		return fmt.Errorf("cannot read file %s: %w", path, err)
+	}
+	_ = f.Close()
 	return nil
 }

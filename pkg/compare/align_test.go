@@ -288,8 +288,8 @@ func TestFingerprintsIgnoreContentOfTextPages(t *testing.T) {
 	d2, _ := r.Open(redrawn)
 	defer d1.Close()
 	defer d2.Close()
-	f1, _ := pageFingerprints(d1)
-	f2, _ := pageFingerprints(d2)
+	f1, _, _ := pageFingerprints(context.Background(), d1)
+	f2, _, _ := pageFingerprints(context.Background(), d2)
 	if !f1[0].matches(f2[0]) || f1[0].matches(f2[1]) {
 		t.Errorf("fingerprints %+v vs %+v", f1, f2)
 	}

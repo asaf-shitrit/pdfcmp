@@ -28,21 +28,12 @@ func init() {
 
 // PHash computes a perceptual hash for an image using DCT.
 // The algorithm:
-// 1. Resize image to 32x32 grayscale
-// 2. Compute 2D DCT (Discrete Cosine Transform)
-// 3. Extract top-left 8x8 block (low frequencies)
-// 4. Compute mean of DCT values (excluding DC component)
-// 5. Set bits based on whether each value exceeds the mean
-//
-// pHash is more robust to minor image changes (compression, scaling)
-// than dHash, but slower to compute due to DCT.
-// PHash computes a perceptual hash for an image using DCT.
-// The algorithm:
-// 1. Resize image to 32x32 grayscale
-// 2. Compute 2D DCT (Discrete Cosine Transform)
-// 3. Extract top-left 8x8 block (low frequencies)
-// 4. Compute mean of DCT values (excluding DC component)
-// 5. Set bits based on whether each value exceeds the mean
+//  1. Resize image to 32x32 grayscale
+//  2. Compute 2D DCT (Discrete Cosine Transform)
+//  3. Take the 63 AC terms of the top-left 8x8 block plus the (row 0,
+//     column 8) term: 64 coefficients, one per hash bit
+//  4. Compute the mean of those 64 values (DC excluded)
+//  5. Set bits based on whether each value exceeds the mean
 //
 // pHash is more robust to minor image changes (compression, scaling)
 // than dHash, but slower to compute due to DCT.
@@ -65,33 +56,31 @@ func PHash(img image.Image) uint64 {
 	dctBuffer := make([]float64, pHashInputSize*pHashInputSize)
 	dct2DFlat(pixels, dctBuffer)
 
-	// Extract top-left 8x8 (low frequencies) and compute mean
-	// Skip DC component (0,0) as it just represents average brightness
-	var sum float64
-	count := 0
+	// Collect the 63 AC terms of the top-left 8x8 block plus one more AC
+	// term (row 0, column 8) so the hash fills all 64 bits. The DC term is
+	// skipped: it only encodes average brightness.
+	var coeffs [HashBits]float64
+	n := 0
 	for y := 0; y < pHashDCTSize; y++ {
-		offset := y * pHashInputSize
 		for x := 0; x < pHashDCTSize; x++ {
-			if x != 0 || y != 0 { // Skip DC component
-				sum += dctBuffer[offset+x]
-				count++
+			if x != 0 || y != 0 {
+				coeffs[n] = dctBuffer[y*pHashInputSize+x]
+				n++
 			}
 		}
 	}
-	mean := sum / float64(count)
+	coeffs[n] = dctBuffer[pHashDCTSize]
 
-	// Build hash based on mean comparison
+	var sum float64
+	for _, c := range coeffs {
+		sum += c
+	}
+	mean := sum / HashBits
+
 	var hash uint64
-	bit := 0
-	for y := 0; y < pHashDCTSize; y++ {
-		offset := y * pHashInputSize
-		for x := 0; x < pHashDCTSize; x++ {
-			if x != 0 || y != 0 { // Skip DC component
-				if dctBuffer[offset+x] > mean {
-					hash |= 1 << uint(bit)
-				}
-				bit++
-			}
+	for i, c := range coeffs {
+		if c > mean {
+			hash |= 1 << uint(i)
 		}
 	}
 
