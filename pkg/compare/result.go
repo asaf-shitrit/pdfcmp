@@ -56,6 +56,11 @@ type Result struct {
 	// false at any threshold.
 	TileChanged bool `json:"tile_changed,omitempty"`
 
+	// byteOnly is true when only a byte comparison was made and the files
+	// differ; IsSimilar is then false at any threshold, as no similarity
+	// was computed
+	byteOnly bool
+
 	// tiles is the comparer's Tiles option, which IsSimilar applies
 	tiles bool
 
@@ -223,6 +228,9 @@ func (r *Result) pagesAdded() bool {
 // reaches the threshold and, unless the comparison used TextChangeScored, no
 // page's text changed and, unless it turned tiles off, no page's tile changed.
 func (r *Result) IsSimilar(threshold float64) bool {
+	if r.byteOnly {
+		return false
+	}
 	if r.pagesAdded() {
 		return false
 	}

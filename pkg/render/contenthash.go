@@ -11,13 +11,20 @@ import (
 	"github.com/klippa-app/go-pdfium/requests"
 )
 
-// ContentHash hashes a page's graphical content: for every page object its
-// type, bounds (rounded to 0.01 pt), fill and stroke colour, and for image
-// objects the raw image data, down into form objects, where PDF writers
-// such as LaTeX put included figures; then the page's annotations, which
-// are drawn with it: comments, stamps and form fields. Two pages with the
-// same text and object count but redrawn graphics, a replaced image or an
-// added annotation hash differently.
+// ContentHash hashes a page's graphical content: first how the page is laid
+// out, its rotation and its media and crop boxes; then for every
+// page object its type, bounds (rounded to 0.01 pt), transform matrix, fill
+// and stroke colour, clip path, for text objects the render mode, and for
+// image objects the raw image data, down into form objects, where PDF
+// writers such as LaTeX put included figures; then the page's annotations,
+// which are drawn with it: comments, stamps and form fields. Bounds alone
+// do not say how an object is drawn: a flipped image has the same bounds, an
+// invisible text object (render mode 3) has the same text, and a clip path
+// can hide everything under it, and the planner scores a page whose hashes
+// match as identical without rendering it. So the hash covers these too, and
+// a rotated or cropped page hashes differently from the original. Two pages
+// with the same text and object count but redrawn graphics, a replaced
+// image or an added annotation hash differently.
 func (d *pdfiumDocument) ContentHash(pageNum int) (uint64, error) {
 	if pageNum < 0 || pageNum >= d.pageCount {
 		return 0, fmt.Errorf("page %d out of range [0, %d)", pageNum, d.pageCount)
@@ -31,11 +38,13 @@ func (d *pdfiumDocument) ContentHash(pageNum int) (uint64, error) {
 	}()
 	page := requests.Page{ByReference: &loaded.Page}
 
+	h := xxhash.New()
+	d.hashPageGeometry(h, page)
+
 	countResp, err := d.instance.FPDFPage_CountObjects(&requests.FPDFPage_CountObjects{Page: page})
 	if err != nil {
 		return 0, fmt.Errorf("failed to count objects: %w", err)
 	}
-	h := xxhash.New()
 	for i := 0; i < countResp.Count; i++ {
 		objResp, err := d.instance.FPDFPage_GetObject(&requests.FPDFPage_GetObject{Page: page, Index: i})
 		if err != nil {
@@ -82,7 +91,7 @@ func (d *pdfiumDocument) hashAnnotation(h *xxhash.Digest, annot references.FPDF_
 	}
 	if r, err := d.instance.FPDFAnnot_GetRect(&requests.FPDFAnnot_GetRect{Annotation: annot}); err == nil {
 		for _, v := range []float32{r.Rect.Left, r.Rect.Bottom, r.Rect.Right, r.Rect.Top} {
-			writeUint(h, uint64(int64(math.Round(float64(v)*100))))
+			writeCoord(h, v)
 		}
 	}
 	for _, key := range []string{"Contents", "V"} {
@@ -93,6 +102,72 @@ func (d *pdfiumDocument) hashAnnotation(h *xxhash.Digest, annot references.FPDF_
 	}
 	if ap, err := d.instance.FPDFAnnot_GetAP(&requests.FPDFAnnot_GetAP{Annotation: annot, AppearanceMode: enums.FPDF_ANNOT_APPEARANCEMODE_NORMAL}); err == nil {
 		_, _ = h.WriteString(ap.Value)
+	}
+}
+
+// writeCoord writes a coordinate rounded to 0.01 pt into h.
+func writeCoord(h *xxhash.Digest, v float32) {
+	writeUint(h, uint64(int64(math.Round(float64(v)*100))))
+}
+
+// hashPageGeometry writes how the page is laid out into h: its rotation and
+// media box and its crop box. A rotated or cropped page shows the same objects differently, so its
+// content hash must differ. A value the page does not have is part of its
+// identity, not an error.
+func (d *pdfiumDocument) hashPageGeometry(h *xxhash.Digest, page requests.Page) {
+	if r, err := d.instance.FPDFPage_GetRotation(&requests.FPDFPage_GetRotation{Page: page}); err == nil {
+		writeUint(h, uint64(r.PageRotation))
+	}
+	media, mediaErr := d.instance.FPDFPage_GetMediaBox(&requests.FPDFPage_GetMediaBox{Page: page})
+	if mediaErr == nil {
+		for _, v := range []float32{media.Left, media.Bottom, media.Right, media.Top} {
+			writeCoord(h, v)
+		}
+	}
+	writeUint(h, 0)
+	if crop, err := d.instance.FPDFPage_GetCropBox(&requests.FPDFPage_GetCropBox{Page: page}); err == nil {
+		for _, v := range []float32{crop.Left, crop.Bottom, crop.Right, crop.Top} {
+			writeCoord(h, v)
+		}
+	}
+	writeUint(h, 0)
+}
+
+// hashClipPath writes the clip path of a page object into h: the number of
+// paths, and for each its segments' types and points. An object without a
+// clip path is part of its identity too, not an error.
+func (d *pdfiumDocument) hashClipPath(h *xxhash.Digest, obj references.FPDF_PAGEOBJECT) {
+	clip, err := d.instance.FPDFPageObj_GetClipPath(&requests.FPDFPageObj_GetClipPath{PageObject: obj})
+	if err != nil || clip.ClipPath == "" {
+		writeUint(h, 0)
+		return
+	}
+	paths, err := d.instance.FPDFClipPath_CountPaths(&requests.FPDFClipPath_CountPaths{ClipPath: clip.ClipPath})
+	if err != nil {
+		writeUint(h, 0)
+		return
+	}
+	writeUint(h, uint64(paths.Count)+1)
+	for p := 0; p < paths.Count; p++ {
+		segs, err := d.instance.FPDFClipPath_CountPathSegments(&requests.FPDFClipPath_CountPathSegments{ClipPath: clip.ClipPath, PathIndex: p})
+		if err != nil {
+			writeUint(h, 0)
+			continue
+		}
+		writeUint(h, uint64(segs.Count)+1)
+		for s := 0; s < segs.Count; s++ {
+			seg, err := d.instance.FPDFClipPath_GetPathSegment(&requests.FPDFClipPath_GetPathSegment{ClipPath: clip.ClipPath, PathIndex: p, SegmentIndex: s})
+			if err != nil {
+				continue
+			}
+			if t, err := d.instance.FPDFPathSegment_GetType(&requests.FPDFPathSegment_GetType{PathSegment: seg.PathSegment}); err == nil {
+				writeUint(h, uint64(t.Type))
+			}
+			if pt, err := d.instance.FPDFPathSegment_GetPoint(&requests.FPDFPathSegment_GetPoint{PathSegment: seg.PathSegment}); err == nil {
+				writeCoord(h, pt.X)
+				writeCoord(h, pt.Y)
+			}
+		}
 	}
 }
 
@@ -109,8 +184,23 @@ func (d *pdfiumDocument) hashObject(h *xxhash.Digest, obj references.FPDF_PAGEOB
 		return err
 	}
 	for _, v := range []float32{b.Left, b.Bottom, b.Right, b.Top} {
-		writeUint(h, uint64(int64(math.Round(float64(v)*100))))
+		writeCoord(h, v)
 	}
+
+	// The matrix tells a flipped or mirrored object from an upright one with
+	// the same bounds; the render mode, an invisible text object from a
+	// visible one; the clip path, an object cut away from one that shows.
+	if m, err := d.instance.FPDFPageObj_GetMatrix(&requests.FPDFPageObj_GetMatrix{PageObject: obj}); err == nil {
+		for _, v := range []float32{m.Matrix.A, m.Matrix.B, m.Matrix.C, m.Matrix.D, m.Matrix.E, m.Matrix.F} {
+			writeCoord(h, v)
+		}
+	}
+	if typeResp.Type == enums.FPDF_PAGEOBJ_TEXT {
+		if mode, err := d.instance.FPDFTextObj_GetTextRenderMode(&requests.FPDFTextObj_GetTextRenderMode{PageObject: obj}); err == nil {
+			writeUint(h, uint64(mode.TextRenderMode)+1)
+		}
+	}
+	d.hashClipPath(h, obj)
 
 	// A colour the object does not have is part of its identity, not an error.
 	if c, err := d.instance.FPDFPageObj_GetFillColor(&requests.FPDFPageObj_GetFillColor{PageObject: obj}); err == nil {

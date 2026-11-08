@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `--timeout` and Ctrl-C now stop a comparison while it reads page info, not only while it renders. For long documents whose text decides every page the timeout did not bound the run time, and an expired deadline exited `0` or `2` at random. An expired deadline now always exits `2`.
+- Input files that are not regular files, or cannot be read, now exit with `2` instead of a wrong verdict or a hang. A pipe's size is the bytes buffered so far, so `pdfcmp quick <(cat a.pdf) a.pdf` reported DIFFERENT for identical content over the pipe buffer, and `pdfcmp quick /dev/zero /dev/zero` never ended. An unreadable file exited `1` when its size differed from the other file's and `2` when it matched. The command line rejects pipes, devices and sockets and opens every file before comparing; `bytewise.Compare` opens both files first and returns an error for anything but a regular file.
+- A page's content hash covers the page's rotation, MediaBox and CropBox, and each object's transform matrix, clip path and text render mode. A page rotated, cropped or clipped differently, text made invisible, or an image flipped within the same bounds left the hash alone, so the page was scored identical without being rendered.
+- The pHash filled 63 of its 64 bits (it skipped the DC term and used nothing in its place) while similarity divides by 64, so two opposite images scored 1/64 instead of 0 and every pHash score was slightly high. The hash now also uses the first horizontal AC term outside the 8x8 block, so it fills all 64 bits.
+- `--memory` sizes renders from the largest page of either document among the pages to render, not the first page of the first document. A document with an A4 cover and A0 pages could peak at several GB under `--memory 512`; it now runs with fewer workers. With no page size readable it uses one worker. Uniform A4 documents are unaffected.
+- `--threshold NaN` is rejected. Every comparison with NaN is false, so the range check let it through and `pdfcmp compare a.pdf a.pdf -t NaN` reported IDENTICAL yet exited 1. `Options.Validate` also rejects unknown mode, hash type and sampling values.
+- A document with no pages compared with one that has pages is now different at any threshold, and its pages are listed as inserted or deleted. With `-t 0` it was reported SIMILAR with exit code 0, and the JSON listed no pages.
+- `--mode byte` decides on bytes alone. Files whose bytes differed exited 0 with `-t 0`, because no similarity score is computed in that mode and the threshold was compared with 0.
+- Two different files with no pages are no longer marked `identical`, which means byte-identical. The summary showed IDENTICAL next to "Byte Comparison: DIFFERENT"; it now shows SIMILAR.
+- The default worker count is capped at 64, the most `Validate` accepts. On a host with more than 64 CPUs, `pdfcmp compare` with no flags and `compare.New()` with default options failed with "workers must be between 1 and 64".
 
 ## [0.4.0] - 2026-11-08
 

@@ -32,6 +32,7 @@ type fakeDoc struct {
 	content    uint64 // reported by ContentHash
 	contentErr error
 	draw       func(pageNum int, img *image.Gray) // draws on each render, when set
+	sizePts    map[int][2]float64                 // page width and height in points reported by PageInfo; default 72x72
 }
 
 // errBrokenPage is what a fakeDoc page in fail renders with.
@@ -40,7 +41,11 @@ var errBrokenPage = errors.New("page is broken")
 func (d *fakeDoc) PageCount() int { return d.pages }
 
 func (d *fakeDoc) PageInfo(pageNum int) (render.PageInfo, error) {
-	return render.PageInfo{Number: pageNum, WidthPts: 72, HeightPts: 72, TextHash: d.textHash}, nil
+	size := [2]float64{72, 72}
+	if v, ok := d.sizePts[pageNum]; ok {
+		size = v
+	}
+	return render.PageInfo{Number: pageNum, WidthPts: size[0], HeightPts: size[1], TextHash: d.textHash}, nil
 }
 
 func (d *fakeDoc) ContentHash(pageNum int) (uint64, error) { return d.content, d.contentErr }
@@ -394,5 +399,46 @@ func TestPagePairerAbortFreesWaiters(t *testing.T) {
 	case <-done:
 	case <-time.After(2 * time.Second):
 		t.Fatal("pairer kept waiting after it was aborted")
+	}
+}
+
+func TestAdjustWorkersForMemoryUsesLargestPage(t *testing.T) {
+	a4, a0 := [2]float64{595, 842}, [2]float64{2384, 3370}
+	tests := []struct {
+		name       string
+		doc1, doc2 *fakeDoc
+		want       int
+	}{
+		{"uniform A4", &fakeDoc{pages: 3, sizePts: map[int][2]float64{0: a4, 1: a4, 2: a4}}, &fakeDoc{pages: 3, sizePts: map[int][2]float64{0: a4, 1: a4, 2: a4}}, 7},
+		{"large later page of doc1", &fakeDoc{pages: 3, sizePts: map[int][2]float64{0: a4, 1: a4, 2: a0}}, &fakeDoc{pages: 3, sizePts: map[int][2]float64{0: a4, 1: a4, 2: a4}}, 1},
+		{"large page only in doc2", &fakeDoc{pages: 3, sizePts: map[int][2]float64{0: a4, 1: a4, 2: a4}}, &fakeDoc{pages: 3, sizePts: map[int][2]float64{0: a4, 1: a0, 2: a4}}, 1},
+		{"medium page", &fakeDoc{pages: 2, sizePts: map[int][2]float64{0: a4, 1: {1200, 1200}}}, &fakeDoc{pages: 2, sizePts: map[int][2]float64{0: a4, 1: a4}}, 2},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &comparer{opts: DefaultOptions()}
+			c.opts.Workers = 16
+			c.opts.DPI = 150
+			c.opts.MaxMemoryMB = 512
+			pairs := make([]pagePair, tc.doc1.pages)
+			for i := range pairs {
+				pairs[i] = pagePair{i, i}
+			}
+			plan, err := c.planPages(context.Background(), tc.doc1, tc.doc2, pairs)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.adjustWorkersForMemory(plan.infos, plan.render); got != tc.want {
+				t.Errorf("workers = %d, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestAdjustWorkersForMemoryNoPageInfo(t *testing.T) {
+	c := &comparer{opts: DefaultOptions()}
+	c.opts.Workers = 8
+	if got := c.adjustWorkersForMemory([]pageInfoPair{{}}, []int{0}); got != 1 {
+		t.Errorf("workers = %d, want 1", got)
 	}
 }

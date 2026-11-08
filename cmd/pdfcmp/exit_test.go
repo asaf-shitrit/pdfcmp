@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -72,5 +73,52 @@ func TestVersionString(t *testing.T) {
 	version = ""
 	if got := versionString(); got == "" {
 		t.Error("versionString() is empty without a build-time version")
+	}
+}
+
+// TestExitCodesUnusableInput checks that a file which cannot be compared exits
+// 2 whatever its size: a FIFO has no usable size, and an unreadable file used
+// to exit 1 when its size differed from the other file's.
+func TestExitCodesUnusableInput(t *testing.T) {
+	withFlags(t, nil)
+	dir := t.TempDir()
+	a := fixture(t, dir, "small_a.pdf")
+	diff := fixture(t, dir, "small_diff_b.pdf")
+
+	fifo := filepath.Join(dir, "pipe.pdf")
+	if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+		t.Skipf("cannot create a FIFO: %v", err)
+	}
+	for _, args := range [][]string{{fifo, a}, {a, fifo}, {fifo, fifo}, {"/dev/zero", "/dev/zero"}} {
+		for _, full := range [][]string{
+			append([]string{"quick"}, args...),
+			append([]string{"compare", "-q"}, args...),
+		} {
+			if got := run(full); got != exitError {
+				t.Errorf("pdfcmp %v: exit %d, want %d", full, got, exitError)
+			}
+		}
+	}
+
+	if os.Geteuid() == 0 {
+		t.Skip("root can read a file with mode 000")
+	}
+	noread := filepath.Join(dir, "noread.pdf")
+	data, err := os.ReadFile(a)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(noread, data, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	for _, other := range []string{a, diff} { // equal size and different size
+		for _, full := range [][]string{
+			{"quick", noread, other},
+			{"compare", "-q", noread, other},
+		} {
+			if got := run(full); got != exitError {
+				t.Errorf("pdfcmp %v: exit %d, want %d", full, got, exitError)
+			}
+		}
 	}
 }
