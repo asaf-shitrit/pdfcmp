@@ -196,6 +196,36 @@ func TestComparePagesCancelled(t *testing.T) {
 	}
 }
 
+// TestComparePagesCancelledTextDecided checks that a done context stops a
+// comparison whose pages text decides, which never reaches the renderer.
+func TestComparePagesCancelledTextDecided(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		mk   func() (context.Context, context.CancelFunc)
+		want error
+	}{
+		{"canceled", func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, cancel
+		}, context.Canceled},
+		{"deadline", func() (context.Context, context.CancelFunc) {
+			return context.WithTimeout(context.Background(), time.Nanosecond)
+		}, context.DeadlineExceeded},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := tc.mk()
+			defer cancel()
+			<-ctx.Done()
+			mk := func() *fakeDoc { return &fakeDoc{pages: 20, textHash: 7, content: 9} }
+			_, err := runComparePages(t, ctx, mk(), mk(), allPageNums(20))
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestPageCountMismatch(t *testing.T) {
 	dir := t.TempDir()
 	five := filepath.Join(dir, "five.pdf")
@@ -394,7 +424,10 @@ func TestAdjustWorkersForMemoryUsesLargestPage(t *testing.T) {
 			for i := range pairs {
 				pairs[i] = pagePair{i, i}
 			}
-			plan := c.planPages(tc.doc1, tc.doc2, pairs)
+			plan, err := c.planPages(context.Background(), tc.doc1, tc.doc2, pairs)
+			if err != nil {
+				t.Fatal(err)
+			}
 			if got := c.adjustWorkersForMemory(plan.infos, plan.render); got != tc.want {
 				t.Errorf("workers = %d, want %d", got, tc.want)
 			}

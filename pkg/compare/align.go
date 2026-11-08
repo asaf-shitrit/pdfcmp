@@ -40,10 +40,13 @@ type fingerprint struct {
 
 // pageFingerprints fingerprints every page of doc and returns each page's
 // text, which alignment uses to line up pages inside a gap.
-func pageFingerprints(doc render.Document) ([]fingerprint, []string) {
+func pageFingerprints(ctx context.Context, doc render.Document) ([]fingerprint, []string, error) {
 	fps := make([]fingerprint, doc.PageCount())
 	texts := make([]string, len(fps))
 	for i := range fps {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		info, err := doc.PageInfo(i)
 		hash, herr := doc.ContentHash(i)
 		if err != nil || herr != nil {
@@ -57,7 +60,7 @@ func pageFingerprints(doc render.Document) ([]fingerprint, []string) {
 			fps[i] = fingerprint{objects: info.ObjectCount, content: hash, valid: true}
 		}
 	}
-	return fps, texts
+	return fps, texts, nil
 }
 
 func (f fingerprint) matches(g fingerprint) bool { return f.valid && f == g }
@@ -235,8 +238,14 @@ func (c *comparer) alignStage(ctx context.Context, result *Result, doc1, doc2 re
 	result.ComparisonLayers = append(result.ComparisonLayers, "align")
 	c.reportProgress("Aligning pages", 0, doc1.PageCount()+doc2.PageCount(), 0.2)
 
-	fp1, text1 := pageFingerprints(doc1)
-	fp2, text2 := pageFingerprints(doc2)
+	fp1, text1, err := pageFingerprints(ctx, doc1)
+	if err != nil {
+		return err
+	}
+	fp2, text2, err := pageFingerprints(ctx, doc2)
+	if err != nil {
+		return err
+	}
 	al := alignPages(fp1, fp2, func(i, j int) float64 {
 		s, _ := content.Similarity(text1[i], text2[j])
 		return s
