@@ -189,6 +189,7 @@ func (c *comparer) byteStage(result *Result, pdf1, pdf2 string) (bool, error) {
 	}
 	if c.opts.Mode == ModeByte {
 		result.SimilarityScore = 0.0
+		result.byteOnly = true
 		return true, nil
 	}
 	return false, nil
@@ -282,11 +283,13 @@ func (c *comparer) pageCountStage(result *Result, doc1, doc2 render.Document) bo
 	switch {
 	case n1 == 0 && n2 == 0:
 		c.opts.Logger.Debug("Both PDFs have 0 pages, treating as identical")
-		result.setIdentical("empty documents")
+		result.setEmpty()
 		return true
 	case n1 == 0 || n2 == 0:
 		c.opts.Logger.Debug("One PDF has 0 pages", F("pages1", n1), F("pages2", n2))
 		result.setMismatch("empty document mismatch")
+		result.DeletedPages = pageRange(n1)
+		result.InsertedPages = pageRange(n2)
 		return true
 	}
 	return false
@@ -931,6 +934,29 @@ func (r *Result) setIdentical(strategy string) {
 		OverallScore:     1.0,
 		SamplingStrategy: strategy,
 	}
+}
+
+// setEmpty records two documents without pages. They match as documents, but
+// they are not byte-identical, so Identical stays as the byte stage left it.
+func (r *Result) setEmpty() {
+	r.SimilarityScore = 1.0
+	r.VisualComparison = VisualResult{
+		OverallScore:     1.0,
+		SamplingStrategy: "empty documents",
+	}
+}
+
+// pageRange lists the 1-indexed pages of a document of n pages, or nil when
+// n is 0.
+func pageRange(n int) []int {
+	if n <= 0 {
+		return nil
+	}
+	pages := make([]int, n)
+	for i := range pages {
+		pages[i] = i + 1
+	}
+	return pages
 }
 
 // setMismatch records documents found different without comparing pages.

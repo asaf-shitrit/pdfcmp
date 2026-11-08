@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - `--memory` sizes renders from the largest page of either document among the pages to render, not the first page of the first document. A document with an A4 cover and A0 pages could peak at several GB under `--memory 512`; it now runs with fewer workers. With no page size readable it uses one worker. Uniform A4 documents are unaffected.
+- `--threshold NaN` is rejected. Every comparison with NaN is false, so the range check let it through and `pdfcmp compare a.pdf a.pdf -t NaN` reported IDENTICAL yet exited 1. `Options.Validate` also rejects unknown mode, hash type and sampling values.
+- A document with no pages compared with one that has pages is now different at any threshold, and its pages are listed as inserted or deleted. With `-t 0` it was reported SIMILAR with exit code 0, and the JSON listed no pages.
+- `--mode byte` decides on bytes alone. Files whose bytes differed exited 0 with `-t 0`, because no similarity score is computed in that mode and the threshold was compared with 0.
+- Two different files with no pages are no longer marked `identical`, which means byte-identical. The summary showed IDENTICAL next to "Byte Comparison: DIFFERENT"; it now shows SIMILAR.
+- The default worker count is capped at 64, the most `Validate` accepts. On a host with more than 64 CPUs, `pdfcmp compare` with no flags and `compare.New()` with default options failed with "workers must be between 1 and 64".
 
 ## [0.4.0] - 2026-11-08
 

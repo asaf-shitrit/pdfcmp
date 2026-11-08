@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"runtime"
 	"runtime/debug"
 	"syscall"
 	"time"
@@ -120,7 +119,7 @@ differ, and 2 if they could not be compared.`,
 
 	compareCmd.Flags().StringVarP(&mode, "mode", "m", "auto", "Comparison mode: auto, byte, visual, full")
 	compareCmd.Flags().IntVar(&dpi, "dpi", 150, "Rendering DPI for visual comparison")
-	compareCmd.Flags().IntVarP(&workers, "workers", "w", runtime.NumCPU(), "Number of worker goroutines")
+	compareCmd.Flags().IntVarP(&workers, "workers", "w", compare.DefaultWorkers(), "Number of worker goroutines")
 	compareCmd.Flags().Float64VarP(&threshold, "threshold", "t", 0.95, "Similarity threshold (0.0 to 1.0)")
 	compareCmd.Flags().StringVar(&hashType, "hash", "both", "Hash type: dhash, phash, both")
 	compareCmd.Flags().StringVar(&textHash, "text-hash", "minhash", "Text similarity for pages whose text differs: minhash, off")
