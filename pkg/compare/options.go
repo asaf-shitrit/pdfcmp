@@ -236,6 +236,9 @@ func WithProgress(fn func(Progress)) Option {
 // WithLogger sets a structured logger for debugging and monitoring
 func WithLogger(logger Logger) Option {
 	return func(o *Options) {
+		if logger == nil {
+			logger = NopLogger{}
+		}
 		o.Logger = logger
 	}
 }
@@ -263,6 +266,10 @@ func (o *Options) Validate() error {
 	// The negated form rejects NaN, for which every comparison is false.
 	if !(o.SimilarityThreshold >= 0.0 && o.SimilarityThreshold <= 1.0) {
 		errs = append(errs, fmt.Errorf("similarity threshold must be between 0.0 and 1.0, got %f", o.SimilarityThreshold))
+	}
+
+	if o.Logger == nil {
+		errs = append(errs, errors.New("logger must not be nil"))
 	}
 
 	errs = append(errs, o.validateEnums()...)

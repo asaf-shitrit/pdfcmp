@@ -243,9 +243,53 @@ func (r *Result) IsSimilar(threshold float64) bool {
 	return r.SimilarityScore >= threshold
 }
 
-// JSON returns the result as a JSON string
+// Verdict is the run's decision, as the JSON output carries it beside the
+// Result's own fields. The decision depends on settings of the run (the
+// threshold, the text-change mode, tiles) that the other fields do not show.
+type Verdict struct {
+	// Status is IDENTICAL, SIMILAR or DIFFERENT, as Summary prints it.
+	Status string `json:"status"`
+
+	// Similar is IsSimilar at Threshold, which the CLI's exit code follows.
+	Similar bool `json:"similar"`
+
+	// Threshold is the similarity threshold the verdict used.
+	Threshold float64 `json:"threshold"`
+
+	// TextChangeMode is "fails" or "scored".
+	TextChangeMode string `json:"text_change_mode"`
+
+	// Tiles is true when a changed tile makes a page different.
+	Tiles bool `json:"tiles"`
+}
+
+// Verdict returns the run's decision at the threshold the comparison ran with.
+func (r *Result) Verdict() Verdict {
+	threshold := DefaultSimilarityThreshold
+	if r.hasThreshold {
+		threshold = r.threshold
+	}
+	mode := "fails"
+	if r.textMode == TextChangeScored {
+		mode = "scored"
+	}
+	similar := r.IsSimilar(threshold)
+	status := "DIFFERENT"
+	if r.Identical {
+		status = "IDENTICAL"
+	} else if similar {
+		status = "SIMILAR"
+	}
+	return Verdict{Status: status, Similar: similar, Threshold: threshold, TextChangeMode: mode, Tiles: r.tiles}
+}
+
+// JSON returns the result as a JSON string, with the run's Verdict added.
 func (r *Result) JSON() (string, error) {
-	b, err := json.MarshalIndent(r, "", "  ")
+	type plain Result // drops methods, so the embedding below cannot recurse
+	b, err := json.MarshalIndent(struct {
+		*plain
+		Verdict
+	}{(*plain)(r), r.Verdict()}, "", "  ")
 	if err != nil {
 		return "", err
 	}
@@ -254,16 +298,7 @@ func (r *Result) JSON() (string, error) {
 
 // Summary returns a human-readable summary of the comparison
 func (r *Result) Summary() string {
-	threshold := DefaultSimilarityThreshold
-	if r.hasThreshold {
-		threshold = r.threshold
-	}
-	status := "DIFFERENT"
-	if r.Identical {
-		status = "IDENTICAL"
-	} else if r.IsSimilar(threshold) {
-		status = "SIMILAR"
-	}
+	status := r.Verdict().Status
 
 	summary := fmt.Sprintf(`PDF Comparison Result
 =====================
