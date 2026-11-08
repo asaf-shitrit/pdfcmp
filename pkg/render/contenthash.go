@@ -27,6 +27,22 @@ import (
 // a rotated or cropped page hashes differently from the original. Two pages
 // with the same text and object count but redrawn graphics, a replaced
 // image or an added annotation hash differently.
+//
+// A path also hashes how it is painted: fill rule, whether it is stroked,
+// and for a stroke its width, cap, join and dash array and phase; and all of
+// its segments, not a sample. An annotation hashes its flags (hidden, print).
+// An image hashes its colour space, bit depth and raw data, and, when small,
+// the pixels PDFium decodes from it, which carry a /Decode array or a palette.
+//
+// What the hash cannot capture is not guessed: ContentHash returns
+// ErrNotHashable, and the planner renders the page. That covers an object
+// (also inside a form) with an optional content mark, a layer a viewer can
+// switch off; a shading object; an image in a colour space other than
+// DeviceGray, DeviceRGB or DeviceCMYK that is too large to hash its pixels; and
+// a page with more than maxPageSegments path segments. Known gaps, as
+// go-pdfium has no getter for them: the blend mode of an ExtGState (/BM), a
+// /Decode array on a large image, and an image's soft or stencil mask are not
+// hashed, so pages that differ only in these hash equal.
 func (d *pdfiumDocument) ContentHash(pageNum int) (uint64, error) {
 	if pageNum < 0 || pageNum >= d.pageCount {
 		return 0, fmt.Errorf("page %d out of range [0, %d)", pageNum, d.pageCount)
@@ -41,6 +57,7 @@ func (d *pdfiumDocument) ContentHash(pageNum int) (uint64, error) {
 	page := requests.Page{ByReference: &loaded.Page}
 
 	h := xxhash.New()
+	st := &hashState{}
 	d.hashPageGeometry(h, page)
 
 	countResp, err := d.instance.FPDFPage_CountObjects(&requests.FPDFPage_CountObjects{Page: page})
@@ -52,7 +69,7 @@ func (d *pdfiumDocument) ContentHash(pageNum int) (uint64, error) {
 		if err != nil {
 			return 0, fmt.Errorf("failed to get object %d: %w", i, err)
 		}
-		if err := d.hashObject(h, objResp.PageObject, 0); err != nil {
+		if err := d.hashObject(h, st, page, objResp.PageObject, 0); err != nil {
 			return 0, fmt.Errorf("object %d: %w", i, err)
 		}
 	}
@@ -67,7 +84,7 @@ func (d *pdfiumDocument) ContentHash(pageNum int) (uint64, error) {
 const maxFormDepth = 16
 
 // hashAnnotations writes the identity of a page's annotations into h: each
-// one's subtype, rectangle, contents, field value and normal appearance.
+// one's subtype, rectangle, flags (hidden, print), contents, field value and normal appearance.
 func (d *pdfiumDocument) hashAnnotations(h *xxhash.Digest, page requests.Page) error {
 	count, err := d.instance.FPDFPage_GetAnnotCount(&requests.FPDFPage_GetAnnotCount{Page: page})
 	if err != nil {
@@ -95,6 +112,9 @@ func (d *pdfiumDocument) hashAnnotation(h *xxhash.Digest, annot references.FPDF_
 		for _, v := range []float32{r.Rect.Left, r.Rect.Bottom, r.Rect.Right, r.Rect.Top} {
 			writeCoord(h, v)
 		}
+	}
+	if f, err := d.instance.FPDFAnnot_GetFlags(&requests.FPDFAnnot_GetFlags{Annotation: annot}); err == nil {
+		writeUint(h, uint64(f.Flags)+1)
 	}
 	for _, key := range []string{"Contents", "V"} {
 		if v, err := d.instance.FPDFAnnot_GetStringValue(&requests.FPDFAnnot_GetStringValue{Annotation: annot, Key: key}); err == nil {
@@ -220,30 +240,26 @@ func (d *pdfiumDocument) hashClipPath(h *xxhash.Digest, obj references.FPDF_PAGE
 	}
 }
 
-// maxHashedSegments bounds how many segments of one path hashPath reads
-// (three calls into PDFium each): a longer path is sampled at an even
-// stride, and its segment count is hashed too.
-const maxHashedSegments = 256
-
-// hashPath writes a path object's segments into h: their count, and for
+// hashPath writes all of a path object's segments into h: their count, and for
 // each one read its type, close flag and point mapped through the object
 // matrix into page space. Bounds alone do not tell a mirrored or rotated
 // drawing from the original; the page-space points do, and they are the
 // same however a "cm" splits the transform between the matrix and the points.
-func (d *pdfiumDocument) hashPath(h *xxhash.Digest, obj references.FPDF_PAGEOBJECT) {
+func (d *pdfiumDocument) hashPath(h *xxhash.Digest, st *hashState, obj references.FPDF_PAGEOBJECT) error {
 	n, err := d.instance.FPDFPath_CountSegments(&requests.FPDFPath_CountSegments{PageObject: obj})
 	if err != nil {
 		writeUint(h, 0)
-		return
+		return nil
+	}
+	if st.segments += n.Count; st.segments > maxPageSegments {
+		return fmt.Errorf("%w: more than %d path segments", ErrNotHashable, maxPageSegments)
 	}
 	writeUint(h, uint64(n.Count)+1)
 	var a, b, c, dd, e, f float32 = 1, 0, 0, 1, 0, 0
 	if m, err := d.instance.FPDFPageObj_GetMatrix(&requests.FPDFPageObj_GetMatrix{PageObject: obj}); err == nil {
 		a, b, c, dd, e, f = m.Matrix.A, m.Matrix.B, m.Matrix.C, m.Matrix.D, m.Matrix.E, m.Matrix.F
 	}
-	stride := (n.Count + maxHashedSegments - 1) / maxHashedSegments
-	stride = max(stride, 1)
-	for i := 0; i < n.Count; i += stride {
+	for i := 0; i < n.Count; i++ {
 		seg, err := d.instance.FPDFPath_GetPathSegment(&requests.FPDFPath_GetPathSegment{PageObject: obj, Index: i})
 		if err != nil {
 			continue
@@ -261,12 +277,19 @@ func (d *pdfiumDocument) hashPath(h *xxhash.Digest, obj references.FPDF_PAGEOBJE
 			writeCoord(h, b*pt.X+dd*pt.Y+f)
 		}
 	}
+	return nil
 }
 
 // hashObject writes one page object's identity into h.
-func (d *pdfiumDocument) hashObject(h *xxhash.Digest, obj references.FPDF_PAGEOBJECT, depth int) error {
+func (d *pdfiumDocument) hashObject(h *xxhash.Digest, st *hashState, page requests.Page, obj references.FPDF_PAGEOBJECT, depth int) error {
 	typeResp, err := d.instance.FPDFPageObj_GetType(&requests.FPDFPageObj_GetType{PageObject: obj})
 	if err != nil {
+		return err
+	}
+	if typeResp.Type == enums.FPDF_PAGEOBJ_SHADING {
+		return fmt.Errorf("%w: shading object", ErrNotHashable)
+	}
+	if err := d.checkOptionalContent(obj); err != nil {
 		return err
 	}
 	writeUint(h, uint64(typeResp.Type))
@@ -301,7 +324,10 @@ func (d *pdfiumDocument) hashObject(h *xxhash.Digest, obj references.FPDF_PAGEOB
 		}
 	}
 	if typeResp.Type == enums.FPDF_PAGEOBJ_PATH {
-		d.hashPath(h, obj)
+		if err := d.hashPath(h, st, obj); err != nil {
+			return err
+		}
+		d.hashPathStyle(h, obj)
 	}
 	d.hashClipPath(h, obj)
 
@@ -314,21 +340,16 @@ func (d *pdfiumDocument) hashObject(h *xxhash.Digest, obj references.FPDF_PAGEOB
 	}
 
 	if typeResp.Type == enums.FPDF_PAGEOBJ_FORM && depth < maxFormDepth {
-		return d.hashForm(h, obj, depth+1)
+		return d.hashForm(h, st, page, obj, depth+1)
 	}
 	if typeResp.Type != enums.FPDF_PAGEOBJ_IMAGE {
 		return nil
 	}
-	img, err := d.instance.FPDFImageObj_GetImageDataRaw(&requests.FPDFImageObj_GetImageDataRaw{ImageObject: obj})
-	if err != nil {
-		return err
-	}
-	_, _ = h.Write(img.Data)
-	return nil
+	return d.hashImage(h, page, obj)
 }
 
 // hashForm writes the objects of a form object into h.
-func (d *pdfiumDocument) hashForm(h *xxhash.Digest, form references.FPDF_PAGEOBJECT, depth int) error {
+func (d *pdfiumDocument) hashForm(h *xxhash.Digest, st *hashState, page requests.Page, form references.FPDF_PAGEOBJECT, depth int) error {
 	count, err := d.instance.FPDFFormObj_CountObjects(&requests.FPDFFormObj_CountObjects{PageObject: form})
 	if err != nil {
 		return err
@@ -339,7 +360,7 @@ func (d *pdfiumDocument) hashForm(h *xxhash.Digest, form references.FPDF_PAGEOBJ
 		if err != nil {
 			return err
 		}
-		if err := d.hashObject(h, obj.PageObject, depth); err != nil {
+		if err := d.hashObject(h, st, page, obj.PageObject, depth); err != nil {
 			return err
 		}
 	}

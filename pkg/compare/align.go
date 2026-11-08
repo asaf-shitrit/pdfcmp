@@ -50,11 +50,16 @@ func pageFingerprints(ctx context.Context, doc render.Document) ([]fingerprint, 
 			return nil, nil, err
 		}
 		info, err := doc.PageInfo(i)
-		hash, herr := doc.ContentHash(i)
-		if err != nil || herr != nil {
+		if err != nil {
 			continue
 		}
 		texts[i] = info.Text
+		hash, herr := doc.ContentHash(i)
+		if herr != nil {
+			// Not hashable (or failed): the page has no fingerprint, so it is
+			// never an exact match, but alignment still reads its text.
+			continue
+		}
 		switch {
 		case info.TextHash != 0:
 			fps[i] = fingerprint{text: info.TextHash, valid: true}
