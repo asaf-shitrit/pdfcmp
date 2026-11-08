@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- The pHash filled 63 of its 64 bits (it skipped the DC term and used nothing in its place) while similarity divides by 64, so two opposite images scored 1/64 instead of 0 and every pHash score was slightly high. The hash now also uses the first horizontal AC term outside the 8x8 block, so it fills all 64 bits.
+
 ## [0.4.0] - 2026-11-08
 
 ### Fixed
