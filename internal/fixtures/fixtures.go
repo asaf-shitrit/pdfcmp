@@ -200,23 +200,29 @@ type Spec struct {
 }
 
 // Set is the benchmark fixture set. Files named *_a and *_b hold the same
-// content.
+// content, so comparing them decides every page from text without rendering.
+// Files named *_changed hold the *_a text with other seeded values on every
+// page, so comparing them renders every page.
 var Set = []Spec{
 	text("small_a.pdf", "identical", 5, "Hello World - Test Document"),
 	text("small_b.pdf", "identical", 5, "Hello World - Test Document"),
+	{"small_changed.pdf", "every page differs from small_a", 5, func(p string) error { return Text(p, 5, "Hello World - Test Document", 43) }},
 	text("small_diff_a.pdf", "different title", 5, "Document Version A"),
 	text("small_diff_b.pdf", "different title", 5, "Document Version B"),
 	text("medium_a.pdf", "identical", 20, "Medium Test Document"),
 	text("medium_b.pdf", "identical", 20, "Medium Test Document"),
 	{"medium_modified.pdf", "page 10 modified", 20, func(p string) error { return Modified(p, 20, "Medium Test Document", 42, 10) }},
+	{"medium_changed.pdf", "every page differs from medium_a", 20, func(p string) error { return Text(p, 20, "Medium Test Document", 43) }},
 	text("large_a.pdf", "identical", 50, "Large Test Document"),
 	text("large_b.pdf", "identical", 50, "Large Test Document"),
+	{"large_changed.pdf", "every page differs from large_a", 50, func(p string) error { return Text(p, 50, "Large Test Document", 43) }},
 	{"graphic_a.pdf", "shapes", 10, func(p string) error { return Graphic(p, 10, 42) }},
 	{"graphic_b.pdf", "shapes", 10, func(p string) error { return Graphic(p, 10, 42) }},
 	{"graphic_modified.pdf", "different shapes", 10, func(p string) error { return Graphic(p, 10, 43) }},
 	text("single_a.pdf", "identical", 1, "Single Page Document"),
 	text("single_b.pdf", "identical", 1, "Single Page Document"),
 	text("xlarge.pdf", "stress test", 100, "Extra Large Test Document"),
+	{"xlarge_changed.pdf", "every page differs from xlarge", 100, func(p string) error { return Text(p, 100, "Extra Large Test Document", 43) }},
 	{"mixed_a.pdf", "text and graphics pages", 50, func(p string) error { return Mixed(p, 50, 42) }},
 	{"mixed_b.pdf", "text and graphics pages", 50, func(p string) error { return Mixed(p, 50, 42) }},
 	{"scanned_a.pdf", "images only", 20, func(p string) error { return ImageOnly(p, 20, 42) }},

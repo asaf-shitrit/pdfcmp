@@ -50,6 +50,16 @@ func TestGenerate(t *testing.T) {
 		}
 	}
 
+	// Each *_changed file differs from its original on every page.
+	for _, pair := range [][2]string{{"small_a.pdf", "small_changed.pdf"}, {"medium_a.pdf", "medium_changed.pdf"}, {"large_a.pdf", "large_changed.pdf"}, {"xlarge.pdf", "xlarge_changed.pdf"}} {
+		a, c := texts[pair[0]], texts[pair[1]]
+		for p := range a {
+			if a[p] == c[p] {
+				t.Errorf("%s and %s have the same text on page %d", pair[0], pair[1], p+1)
+			}
+		}
+	}
+
 	// medium_modified differs from medium_a on page 10 only.
 	a, m := texts["medium_a.pdf"], texts["medium_modified.pdf"]
 	for p := range a {

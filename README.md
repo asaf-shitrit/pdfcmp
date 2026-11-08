@@ -89,43 +89,60 @@ A `Comparer` is safe for concurrent use, and so are comparers used side by side:
 
 ## Performance
 
-Benchmarks run on Apple M2 Pro with various PDF types (single-page, small 4-page, medium 10-page, large 30-page, and extra-large documents):
+Measured on an Apple M2 Pro (10 cores, Go 1.27 on darwin/arm64) with:
 
-### Fast-Path Optimizations
-| Scenario | Time | Notes |
+```bash
+make bench    # generates bench/fixtures/*.pdf, then go test -bench=. -benchmem ./bench/...
+```
+
+The fixtures come from `internal/fixtures`: small is 5 pages, medium 20, large 50, extra-large 100. The machine was shared with other jobs (1-minute load 4 to 7 on 10 cores, with spikes during some runs), so treat the numbers as rough. Medium and large varied by about 10% between runs, and the extra-large run by more.
+
+### Without rendering
+These pairs never reach the renderer. `bench/` names them `ByteIdentical`, `ByteOnly` and `PlanOnly`.
+
+| Scenario | Time | What runs |
 | :--- | :--- | :--- |
-| **Identical files (self-compare)** | 3.9μs | Text-first optimization bypasses rendering |
-| **Small identical (4 pages)** | 4.6μs | Early exit after metadata check |
-| **Byte-only mode** | 8.0μs | xxHash64 at ~8 GB/s |
+| **Same file twice** (small or extra-large) | 6μs | Byte hash only |
+| **Byte-only mode** (5 pages, same text, different bytes) | 39μs | xxHash64 of both files |
+| **Same text, different bytes** (5 pages) | 11ms | Page info and content hash for each page; every page scores 1.0 |
+| **Same text, different bytes** (20 pages) | 32ms | Same |
+| **Same text, different bytes** (50 pages) | 62ms | Same |
 
-### Full Visual Comparison
+### Full visual comparison
+Every page differs between the two files (`*_a` against `*_changed`), with `SamplingAll`, so every page is rendered at 150 DPI and hashed. The benchmark fails if any page scores 1.0 without a render.
+
 | Document Size | Pages | Time | Throughput |
 | :--- | :--- | :--- | :--- |
-| **Small** | 4 | 129ms | 31 pages/sec |
-| **Medium** | 10 | 511ms | 20 pages/sec |
-| **Large** | 30 | 1.54s | **74 pages/sec** |
+| **Small** | 5 | 72ms | 70 pages/sec |
+| **Medium** | 20 | 216ms | 93 pages/sec |
+| **Large** | 50 | 455ms | 110 pages/sec |
+| **Extra-large** | 100 | 0.9 to 1.2s | 80 to 110 pages/sec |
 
-### Sampling Strategies (10-page document)
+### Sampling Strategies (20-page document)
+`medium_a` against `medium_changed`, where every page differs.
+
 | Strategy | Time | Speedup |
 | :--- | :--- | :--- |
-| **Thumbnail only** (72 DPI) | 15ms | 22x faster |
-| **Strategic** (√n + 2 pages) | 85ms | 4x faster |
-| **Full** (all pages) | 338ms | baseline |
+| **Thumbnail only** (72 DPI) | 17ms | 14x faster |
+| **Strategic** (√n + 2 pages) | 71ms | 3.4x faster |
+| **Full** (all pages) | 240ms | baseline |
 
 ### Hash Algorithm Performance
-| Algorithm | Time (medium doc) | Use Case |
-| :--- | :--- | :--- |
-| **Histogram** | <1ms | Color pre-filter (instant rejection) |
-| **DHash** | 89ms | Structural comparison |
-| **PHash** | 79ms | Frequency-based (DCT) |
-| **Both** | 113ms | Combined approach (best accuracy) |
+Hashing one rendered medium-size page image:
 
-### DPI Impact (single page render + hash)
+| Algorithm | Time | Use Case |
+| :--- | :--- | :--- |
+| **Histogram** | 0.69ms | Color pre-filter (instant rejection) |
+| **DHash** | 0.82ms | Structural comparison |
+| **PHash** | 0.84ms | Frequency-based (DCT) |
+| **Both** | 1.7ms | Combined approach (best accuracy) |
+
+### DPI Impact (single page render)
 | DPI | Time | Quality |
 | :--- | :--- | :--- |
-| **72** | 4.2ms | Thumbnail (good for hashing) |
-| **150** | 16.5ms | Standard (4x slower) |
-| **300** | 46.8ms | High-res (11x slower) |
+| **72** | 0.8ms | Thumbnail (good for hashing) |
+| **150** | 2.2ms | Standard (2.8x slower) |
+| **300** | 12.7ms | High-res (16x slower) |
 
 ## Accuracy & Robustness
 
@@ -204,10 +221,10 @@ PDFCMP_MATRIX=1 go test ./bench -run 'TestContentMatrix|TestTemplatedPage' -v
 
 Benchmarks include diverse PDF types to ensure robustness:
 - **Single-page**: Minimal overhead testing
-- **Small (4 pages)**: Quick documents with text and graphics
-- **Medium (10 pages)**: Standard reports and documents
-- **Large (30 pages)**: Complex multi-page documents
-- **Extra-large**: Stress testing with high page counts
+- **Small (5 pages)**: Quick documents with text and graphics
+- **Medium (20 pages)**: Standard reports and documents
+- **Large (50 pages)**: Complex multi-page documents
+- **Extra-large (100 pages)**: Stress testing with high page counts
 - **Graphic-heavy**: Image-rich presentations
 - **Mixed content**: Combined text, images, and vector graphics
 - **Scanned documents**: OCR'd documents with image-based pages
@@ -215,7 +232,7 @@ Benchmarks include diverse PDF types to ensure robustness:
 ## Development
 
 - **Tests**: `make test`. Tests write the PDFs they need from `internal/fixtures`.
-- **Benchmarks**: `make fixtures`, then `make bench`.
+- **Benchmarks**: `make bench` generates the fixtures first. A PDF benchmark fails when its fixture is missing; set `PDFCMP_BENCH_SKIP_MISSING=1` to skip instead.
 - **Linting**: `make lint`
 - **CRAP gate**: `make crap` fails when a function's CRAP score (complexity² × (1 − coverage)³ + complexity) is above 30. `make hooks` runs it before every commit.
 
