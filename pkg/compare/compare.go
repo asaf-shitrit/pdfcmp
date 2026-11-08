@@ -473,6 +473,11 @@ func (c *comparer) planPages(ctx context.Context, doc1, doc2 render.Document, pa
 			plan.results[i] = PageResult{Page: pr.p1 + 1, Similarity: 1.0}
 			continue
 		}
+		if ok && info1.TextBag != 0 && info1.TextBag == info2.TextBag && content.Swapped(info1.Text, info2.Text) {
+			// Same letters and digits, but a mark exchanged for another
+			// (1,500 for 1.500, ü for ö): not the same text.
+			info2.TextBag = 0
+		}
 		if ok {
 			plan.textSims[i] = c.textSimilarity(info1, info2)
 		}

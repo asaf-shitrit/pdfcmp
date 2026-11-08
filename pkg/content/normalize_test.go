@@ -82,3 +82,26 @@ func TestBag(t *testing.T) {
 		}
 	}
 }
+
+func TestSwapped(t *testing.T) {
+	for _, tc := range []struct {
+		name, a, b string
+		want       bool
+	}{
+		{"comma and period in a number", "due 1,500 USD", "due 1.500 USD", true},
+		{"time", "at 12:30", "at 12.30", true},
+		{"u to o umlaut", "Müller", "Möller", true},
+		{"same text", "due 1,500 USD", "due 1,500 USD", false},
+		{"punctuation outside a number", "due: 1500", "due; 1500", false},
+		{"bullet remapped to i diaeresis", "• item 1200", "ï item 1200", false},
+		{"glyphs remapped to letters", "• a • b", "í a ñ b", false},
+		{"space moved after a period", "in 2035. 3 City", "in 2035.3 City", false},
+		{"bullet to symbol", "• item", "¥ item", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := Swapped(tc.a, tc.b); got != tc.want {
+				t.Errorf("Swapped(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+			}
+		})
+	}
+}
