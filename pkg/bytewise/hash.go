@@ -1,8 +1,8 @@
 package bytewise
 
 import (
+	"fmt"
 	"io"
-	"os"
 
 	"github.com/cespare/xxhash/v2"
 )
@@ -19,29 +19,21 @@ type HashResult struct {
 }
 
 // HashFile computes xxHash64 of a file using streaming reads.
-// This is memory-efficient for large files.
+// This is memory-efficient for large files. Only regular files are accepted;
+// a FIFO or device returns an error instead of blocking or never ending.
 func HashFile(path string) (HashResult, error) {
-	f, err := os.Open(path)
+	f, size, err := openRegular(path)
 	if err != nil {
 		return HashResult{}, err
 	}
 	defer func() { _ = f.Close() }()
 
-	// Get file size
-	stat, err := f.Stat()
-	if err != nil {
-		return HashResult{}, err
-	}
-
 	hash, err := HashReader(f)
 	if err != nil {
-		return HashResult{}, err
+		return HashResult{}, fmt.Errorf("cannot hash %s: %w", path, err)
 	}
 
-	return HashResult{
-		Hash: hash,
-		Size: stat.Size(),
-	}, nil
+	return HashResult{Hash: hash, Size: size}, nil
 }
 
 // HashReader computes xxHash64 from an io.Reader using streaming reads.

@@ -97,6 +97,12 @@ func TestSwapped(t *testing.T) {
 		{"glyphs remapped to letters", "• a • b", "í a ñ b", false},
 		{"space moved after a period", "in 2035. 3 City", "in 2035.3 City", false},
 		{"bullet to symbol", "• item", "¥ item", false},
+		{"spaces moved opposite ways", "Total 2035. 3 rows, 7,5", "Total 2035.3 rows, 7, 5", false},
+		{"two moved spaces", "items 1, 2 and 3.4", "items 1,2 and 3. 4", false},
+		{"isolated glyph remap", "Þ item", "ß item", false},
+		{"swap with a moved space", "due 1,500 USD", "due 1. 500 USD", true},
+		{"swap beside a moved space", "Amount due: 1,500 USD", "Amount due:1.500 USD", true},
+		{"different length", "Müller", "Möller x", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := Swapped(tc.a, tc.b); got != tc.want {
