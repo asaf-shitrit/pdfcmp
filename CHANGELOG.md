@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-08
+
 ### Fixed
 - Rendered pages are now freed. PDFium's WebAssembly build renders into its own memory and every page stayed allocated, so memory grew with page count: comparing two 600-page documents peaked at 3.4 GB. Renders are copied out and released, and pages waiting for the other document's render of the same page are capped at the worker count plus one. The same comparison now peaks at 1.5 GB with the defaults (7 workers at 150 DPI on A4 under `--memory 512`) and 0.8 GB with `--workers 4`, 1.6 GB at 1500 pages, and runs in 6.5 s instead of 20 s on a 10-core M-series Mac.
 - Comparisons no longer fail with "Timeout waiting for idle object" when the PDFium pool is busy. A document's render stream renders on the document's own instance and borrows more only while they are free, and comparisons run at once wait for a free pair of instances (`render.PoolSize` / 2) instead of opening their first document and waiting 30 s for the second. Opening a document waits on the comparison's context, so `--timeout` and Ctrl-C also stop a comparison waiting for the pool; a second Ctrl-C kills one slow to stop.
