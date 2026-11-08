@@ -57,6 +57,7 @@ func TestVisiblyDifferentPagesWithSameObjectsAreDifferent(t *testing.T) {
 		{"crop box hides the text", "", text + rect, "/CropBox [0 0 600 300]", text + rect, false, false},
 		{"invisible text", "", text + rect, "", "BT /F1 24 Tf 3 Tr 30 400 Td (Hello world invoice 12345) Tj ET " + rect, false, false},
 		{"clip hides the page", "", text + rect, "", "0 0 10 10 re W n " + text + rect, false, false},
+		{"mirrored arrow", "", text + "0 0 1 rg 100 100 m 300 200 l 100 300 l f", "", text + "0 0 1 rg q -1 0 0 1 400 0 cm 100 100 m 300 200 l 100 300 l f Q", false, false},
 		{"flipped image", "", text + img, "", text + "q -300 0 0 -300 400 350 cm /Im Do Q", false, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
