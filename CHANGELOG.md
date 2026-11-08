@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `--memory` sizes renders from the largest page of either document among the pages to render, not the first page of the first document. A document with an A4 cover and A0 pages could peak at several GB under `--memory 512`; it now runs with fewer workers. With no page size readable it uses one worker. Uniform A4 documents are unaffected.
+
 ## [0.4.0] - 2026-11-08
 
 ### Fixed
